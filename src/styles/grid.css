@@ -1,0 +1,40 @@
+/* Data grid: tinted rounded rows like dk-table, sticky header, inline editing. */
+.db-gridwrap { overflow: auto; max-height: calc(100vh - 330px); min-height: 160px; border-radius: 12px; }
+.db-dg { border-collapse: separate; border-spacing: 0 2px; font-size: 13px; min-width: 100%; table-layout: fixed; }
+.db-dg th { position: sticky; top: 0; z-index: 2; background: var(--surface); text-align: left; font-weight: 700; color: var(--ink3); font-size: 12.5px; padding: 7px 10px; white-space: nowrap; user-select: none; overflow: hidden; text-overflow: ellipsis; }
+.db-dg th .db-th { display: flex; align-items: center; gap: 4px; min-width: 0; cursor: pointer; }
+.db-dg th .db-th span { overflow: hidden; text-overflow: ellipsis; }
+.db-dg th .db-th i { font-style: normal; color: var(--acc); }
+.db-dg th .db-th .ui-icon { width: 12px; height: 12px; color: var(--warn); flex: none; }
+.db-dg th .db-th small { font-weight: 600; color: var(--ink3); opacity: 0.7; font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.db-dg th .db-rs { position: absolute; right: 0; top: 6px; bottom: 6px; width: 7px; cursor: col-resize; border-radius: 3px; }
+.db-dg th .db-rs:hover, .db-dg th .db-rs.db-rs--on { background: color-mix(in srgb, var(--acc) 40%, transparent); }
+.db-dg tr.db-fr th { top: 31px; padding: 2px 4px 6px; }
+.db-dg tr.db-fr th > div { display: flex; gap: 2px; }
+.db-dg tr.db-fr select, .db-dg tr.db-fr input { font: inherit; font-size: 12px; font-weight: 600; color: var(--ink); background: var(--sunk); border: 0; border-radius: 7px; padding: 4px 6px; min-width: 0; outline: none; }
+.db-dg tr.db-fr select { width: 58px; flex: none; padding: 4px 2px; }
+.db-dg tr.db-fr input { flex: 1; width: 100%; }
+.db-dg tr.db-fr input:focus, .db-dg tr.db-fr select:focus { box-shadow: inset 0 0 0 2px var(--acc); }
+.db-dg td { padding: 6px 10px; background: var(--sunk); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0; font-family: var(--mono); font-size: 12.5px; position: relative; }
+.db-dg tr td:first-child { border-radius: 10px 0 0 10px; }
+.db-dg tr td:last-child { border-radius: 0 10px 10px 0; }
+.db-dg tbody tr:hover td { background: color-mix(in srgb, var(--sunk) 75%, var(--ink3)); }
+.db-dg tbody tr.db-sel td { background: var(--acc-s); }
+.db-dg td.db-cell--focus { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--acc) 70%, transparent); }
+.db-dg td.db-cell--edit { padding: 0; overflow: visible; box-shadow: inset 0 0 0 2px var(--acc); }
+.db-dg td.db-cell--edit input { width: 100%; height: 100%; min-height: 30px; font: inherit; color: var(--ink); background: var(--surface); border: 0; padding: 6px 10px; outline: none; border-radius: inherit; }
+.db-dg td.db-cell--saving { opacity: 0.55; }
+.db-dg td.db-cell--flash { animation: db-flash 1.1s ease-out; }
+.db-dg td.db-cell--err { box-shadow: inset 0 0 0 2px var(--err); }
+.db-dg td.db-num { text-align: right; }
+.db-dg td.db-ro { cursor: default; }
+.db-dg .db-cb { width: 38px; text-align: center; padding: 0 6px; font-family: inherit; }
+.db-dg .db-cb input { accent-color: var(--acc); cursor: pointer; width: 15px; height: 15px; vertical-align: middle; }
+.db-dg .db-rn { width: 54px; color: var(--ink3); text-align: right; font-size: 11.5px; }
+.db-null { color: var(--ink3); font-style: italic; font-family: var(--font, inherit); font-size: 12px; }
+@keyframes db-flash { 0% { background: color-mix(in srgb, var(--ok) 45%, var(--sunk)); } 100% { background: var(--sunk); } }
+@media (prefers-reduced-motion: reduce) { .db-dg td.db-cell--flash { animation: none; } }
+.db-dg--ro td { cursor: default; }
+.db-spin { animation: db-spin 0.9s linear infinite; width: 14px; height: 14px; color: var(--ink3); }
+@keyframes db-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .db-spin { animation: none; } }

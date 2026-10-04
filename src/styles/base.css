@@ -1,0 +1,72 @@
+/* Shared building blocks. Tokens only: --surface --sunk --ink --ink2 --ink3, --h/--s from hue-*,
+   --ok --warn --err --info (+ -s), --acc --acc-s, radii --r-*. No grey divider lines. */
+.db-root { font-variant-numeric: tabular-nums; color: var(--ink); min-height: 100%; box-sizing: border-box; padding: 20px 22px 28px; }
+@media (max-width: 900px) { .db-root { padding: 12px 12px 24px; } }
+.db-root *, .db-root *::before, .db-root *::after { box-sizing: border-box; }
+.db-muted { color: var(--ink3); font-size: 12.5px; font-weight: 600; }
+.db-mono { font-family: var(--mono); font-size: 12.5px; }
+.db-grow { flex: 1; min-width: 0; }
+.db-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.db-col { display: flex; flex-direction: column; gap: 12px; }
+
+/* PageHeader */
+.db-ph { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+.db-ph-ic { width: 46px; height: 46px; border-radius: var(--r-icon); display: grid; place-items: center; background: var(--s, var(--acc-s)); color: var(--h, var(--acc)); flex: none; }
+.db-ph-ic .ui-icon { width: 22px; height: 22px; }
+.db-ph-tx { min-width: 120px; flex: 1 1 0; }
+.db-ph-tx h1 { margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; overflow-wrap: anywhere; }
+.db-ph-tx p { margin: 2px 0 0; color: var(--ink2); font-size: 13.5px; }
+.db-ph-act { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* Cards */
+.db-card { background: var(--sunk); border-radius: var(--r-card); padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+.db-card .ui-in { background: var(--surface); }
+.db-card-h { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.db-card-h h3 { margin: 0; font-size: 15px; font-weight: 800; margin-right: auto; }
+.db-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.db-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.db-section-t { margin: 6px 2px 0; font-size: 15px; font-weight: 800; }
+
+/* Engine card */
+.db-eng { background: var(--surface); border-radius: var(--r-card); padding: 16px; display: flex; flex-direction: column; gap: 12px; cursor: pointer; text-align: left; border: 0; color: inherit; font: inherit; transition: background 0.15s; }
+.db-eng:hover { background: color-mix(in srgb, var(--surface) 88%, var(--ink3)); }
+.db-eng:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.db-eng-h { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.db-eng-ic { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--s, var(--acc-s)); color: var(--h, var(--acc)); flex: none; }
+.db-eng-t { min-width: 0; flex: 1; }
+.db-eng-t b { display: block; font-size: 15px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-eng-t span { font-size: 12.5px; color: var(--ink2); }
+.db-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--ink2); }
+.db-kv code, .db-kv strong { color: var(--ink); font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; text-align: right; }
+.db-eng-f { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+.db-eng-f .db-grow { min-width: 8px; }
+
+.db-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; display: inline-block; background: var(--ink3); }
+.db-dot--ok { background: var(--ok); } .db-dot--warn { background: var(--warn); } .db-dot--err { background: var(--err); }
+
+/* Code blocks: follow the theme */
+.db-code { background: var(--sunk); color: var(--ink); padding: 12px 14px; border-radius: 12px; overflow: auto; font: 12.5px/1.55 var(--mono); margin: 0; white-space: pre; max-height: 420px; }
+.db-note { padding: 12px 14px; border-radius: 12px; background: var(--sunk); font-size: 13px; color: var(--ink2); line-height: 1.5; display: flex; gap: 10px; align-items: flex-start; }
+.db-note .ui-icon { flex: none; width: 16px; height: 16px; margin-top: 2px; color: var(--info); }
+.db-note--warn .ui-icon { color: var(--warn); }
+
+/* Forms in dialogs */
+.db-form { display: flex; flex-direction: column; gap: 12px; }
+.db-row2 { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
+.db-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* Settings */
+.db-set { display: flex; flex-direction: column; gap: 4px; }
+.db-set-it { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border-radius: 12px; background: var(--sunk); }
+.db-set-it .db-set-tx { flex: 1; min-width: 0; }
+.db-set-it b { display: block; font-size: 14px; font-weight: 700; }
+.db-set-it span { display: block; font-size: 12.5px; color: var(--ink2); margin-top: 2px; }
+.db-set-it .db-set-ctl { flex: none; width: 160px; display: flex; justify-content: flex-end; }
+.db-set-it .ui-in { background: var(--surface); }
+@media (max-width: 640px) { .db-set-it { flex-wrap: wrap; } .db-set-it .db-set-ctl { width: 100%; justify-content: flex-start; } }
+
+/* Activity */
+.db-act { display: flex; flex-direction: column; gap: 3px; }
+.db-act-it { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 12px; background: var(--sunk); font-size: 13px; }
+.db-act-it b { font-weight: 700; }
+.db-act-it .db-act-m { margin-left: auto; text-align: right; color: var(--ink3); font-size: 12px; white-space: nowrap; }

@@ -1,0 +1,80 @@
+/* Explorer: HeidiSQL-style schema tree (inside the sidebar) and the main pane. */
+.db-tree { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; min-height: 0; flex: 1; margin: 0 -4px; padding: 0 4px 4px; outline: none; }
+.db-tree-row { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 8px; border-radius: 10px; border: 0; background: none; color: var(--ink2); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; text-align: left; min-width: 0; }
+.db-tree-row:hover { background: var(--sunk); color: var(--ink); }
+.db-tree-row .ui-icon { width: 15px; height: 15px; flex: none; }
+.db-tree-row .db-tree-chev { width: 14px; height: 14px; flex: none; color: var(--ink3); transition: transform 0.15s; display: grid; place-items: center; }
+.db-tree-row .db-tree-chev .ui-icon { width: 13px; height: 13px; }
+.db-tree-row[aria-expanded='true'] .db-tree-chev { transform: rotate(90deg); }
+.db-tree-row span.db-tree-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-tree-row b { font-size: 11.5px; color: var(--ink3); font-weight: 700; flex: none; }
+.db-tree-row--db { font-weight: 700; color: var(--ink); }
+.db-tree-row--sys { opacity: 0.6; }
+.db-tree-row--tb { padding-left: 30px; }
+.db-tree-row[aria-current='true'] { background: var(--acc-s); color: var(--acc); }
+.db-tree-row[aria-current='true'] b { color: inherit; }
+.db-tree-row.db-tree-row--active-db { color: var(--acc); }
+.db-tree-row.db-focus { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--acc) 55%, transparent); }
+.db-tree-empty { padding: 6px 8px 6px 30px; font-size: 12px; color: var(--ink3); }
+@media (prefers-reduced-motion: reduce) { .db-tree-row .db-tree-chev { transition: none; } }
+
+/* Main pane */
+.db-ex { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.db-ex-h { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.db-ex-h .db-ph { margin: 0; flex: 1; min-width: 240px; }
+.db-ex-h .db-ph-tx h1 { font-size: 22px; }
+.db-ex-h .db-ph-tx h1 small { color: var(--ink3); font-weight: 700; }
+.db-pane { background: var(--surface); border-radius: var(--r-card); padding: 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.db-pane .ui-in { background: var(--sunk); }
+.db-tb { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.db-tb .db-tb-search { flex: 1 1 260px; min-width: 200px; max-width: 520px; }
+.db-tb-sep { flex: 1; }
+.db-where { display: flex; gap: 8px; align-items: center; }
+.db-where .ui-field, .db-where > div:first-child { flex: 1; }
+.db-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.db-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: 999px; background: var(--acc-s); color: var(--acc); font-size: 12px; font-weight: 700; max-width: 320px; }
+.db-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-weight: 600; }
+.db-chip button { border: 0; background: none; color: inherit; cursor: pointer; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; padding: 0; flex: none; }
+.db-chip button:hover { background: color-mix(in srgb, var(--acc) 20%, transparent); }
+.db-chip button .ui-icon { width: 12px; height: 12px; }
+.db-chip--clear { background: var(--sunk); color: var(--ink2); padding: 3px 10px; border: 0; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; }
+.db-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.db-foot .db-row { gap: 6px; }
+.db-empty-pane { padding: 40px 16px; text-align: center; color: var(--ink3); font-size: 13.5px; font-weight: 600; }
+
+/* Query editor */
+.db-qtabs { display: flex; gap: 4px; align-items: center; overflow-x: auto; scrollbar-width: thin; }
+.db-qtab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-radius: 10px; background: none; border: 0; color: var(--ink2); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap; flex: none; }
+.db-qtab:hover { background: var(--sunk); color: var(--ink); }
+.db-qtab[aria-selected='true'] { background: var(--acc-s); color: var(--acc); }
+.db-qtab .db-qtab-x { width: 18px; height: 18px; border-radius: 6px; display: grid; place-items: center; opacity: 0.6; }
+.db-qtab .db-qtab-x:hover { opacity: 1; background: color-mix(in srgb, var(--ink3) 25%, transparent); }
+.db-qtab .db-qtab-x .ui-icon { width: 11px; height: 11px; }
+.db-qtab input { font: inherit; color: inherit; background: var(--surface); border: 0; border-radius: 6px; padding: 1px 6px; width: 120px; outline: 2px solid var(--acc); }
+.db-sql { border-radius: 12px; background: var(--sunk); overflow: hidden; min-height: 140px; resize: vertical; height: 220px; display: flex; flex-direction: column; }
+.db-sql .cm-editor { flex: 1; height: 100%; background: transparent; color: var(--ink); font-size: 13px; }
+.db-sql .cm-editor.cm-focused { outline: none; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--acc) 45%, transparent); border-radius: 12px; }
+.db-sql .cm-scroller { font-family: var(--mono); line-height: 1.6; }
+.db-sql .cm-gutters { background: transparent; border: 0; color: var(--ink3); }
+.db-sql .cm-activeLine, .db-sql .cm-activeLineGutter { background: color-mix(in srgb, var(--ink3) 8%, transparent); }
+.db-sql .cm-content { caret-color: var(--acc); padding: 10px 0; }
+.db-sql .cm-cursor { border-left-color: var(--acc); }
+.db-sql .cm-selectionBackground, .db-sql .cm-focused .cm-selectionBackground, .db-sql ::selection { background: color-mix(in srgb, var(--acc) 28%, transparent) !important; }
+.db-sql .cm-matchingBracket { background: color-mix(in srgb, var(--acc) 22%, transparent); outline: none; }
+.db-root .cm-tooltip { background: var(--surface); color: var(--ink); border: 0; border-radius: 10px; box-shadow: var(--shadow, 0 8px 30px rgba(0,0,0,.3)); overflow: hidden; font-family: var(--mono); font-size: 12.5px; }
+.db-root .cm-tooltip-autocomplete ul li { padding: 3px 10px !important; }
+.db-root .cm-tooltip-autocomplete ul li[aria-selected] { background: var(--acc-s); color: var(--acc); }
+.db-root .cm-completionDetail { color: var(--ink3); font-style: normal; margin-left: 10px; }
+.db-root .cm-panels { background: var(--surface); color: var(--ink); border: 0; }
+.db-root .cm-panel input, .db-root .cm-panel button { font: inherit; color: var(--ink); background: var(--sunk); border: 0; border-radius: 6px; padding: 2px 6px; }
+.db-qres-h { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--ink2); }
+.db-qres-h b { color: var(--ink); }
+.db-qerr { padding: 12px 14px; border-radius: 12px; background: var(--err-s, var(--sunk)); color: var(--err); font: 12.5px/1.5 var(--mono); white-space: pre-wrap; }
+.db-hist { display: flex; flex-direction: column; gap: 3px; max-height: 50vh; overflow-y: auto; }
+.db-hist-it { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; border-radius: 10px; background: var(--sunk); border: 0; color: var(--ink); text-align: left; cursor: pointer; font: inherit; width: 100%; }
+.db-hist-it:hover { background: var(--acc-s); }
+.db-hist-it code { flex: 1; min-width: 0; font: 12.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-hist-it span { font-size: 11.5px; color: var(--ink3); white-space: nowrap; }
+.db-root .cm-completionMatchedText { text-decoration: none; color: var(--acc); font-weight: 700; }
+.db-root .cm-tooltip-autocomplete ul li[aria-selected] .cm-completionMatchedText { color: inherit; }
+.db-root .cm-completionIcon { opacity: 0.55; }
