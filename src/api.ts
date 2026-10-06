@@ -11,6 +11,8 @@ export interface DbInstance {
   host?: string;
   port?: number;
   container?: string;
+  /** Native service name (Windows service manager). */
+  service?: string;
   path?: string;
   status: 'running' | 'stopped' | 'ready';
   version?: string;
@@ -206,7 +208,7 @@ export const dbApi = {
   detect: () => callBridge<DetectResult>('detect'),
   installDocker: (p: { engine: string; version: string; name: string; password: string; port: number }) =>
     callBridge<{ ok: boolean; container_id: string }>('install-docker', p),
-  installApt: (p: { engine: string }) =>
+  installApt: (p: { engine: string; password?: string }) =>
     callBridge<{ ok: boolean; package: string }>('install-apt', p),
   createSqlite: (p: { path: string }) =>
     callBridge<{ ok: boolean; path: string }>('create-sqlite', p),

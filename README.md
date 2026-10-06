@@ -45,12 +45,22 @@ The dialog lists the permissions below; updates appear in **Plugins › Updates*
   * Toggle the slow query log on/off dynamically with custom duration thresholds.
   * Real-time viewing of recent slow log entries.
 
+## Windows
+
+Needs Ervisio 0.6.2 or later on Windows and Python 3.10+ (`python.exe` on the `PATH` of the account that runs the daemon).
+The plugin lives in `%ProgramData%\Ervisio\data\plugins\database`. On Windows:
+
+* **Docker**: Docker Desktop or Docker Engine (`docker.exe` on the `PATH`).
+* **Native**: MariaDB, MySQL and PostgreSQL registered as Windows services are detected and started, stopped and restarted from the card view; installation uses `winget`.
+* **Administrator rights**: operations that install or control services need the administrator unlock in Ervisio (members of `docker-users` run Docker commands as themselves).
+* The Python packages `pymysql` and `psycopg2` must be installed for that Python (`pip install pymysql psycopg2-binary`); SQLite needs nothing.
+
 ## Permissions
 
 The manifest is [plugin/manifest.json](plugin/manifest.json). In short:
 
-* **Commands**, all `admin` with `adminUnlessGroup: docker`:
-  * `db-bridge` (`python3 /var/lib/ervisio/plugins/database/db-bridge.py {0} {1}`):
+* **Commands**, all `admin` with `adminUnlessGroup: docker` (`docker-users` on Windows):
+  * `db-bridge` (`python3 /var/lib/ervisio/plugins/database/db-bridge.py {0} {1}` on Linux, `python.exe C:\ProgramData\Ervisio\data\plugins\database\db-bridge.py {0} {1}` on Windows):
     Executes database administration operations, schema introspection, container management, and query dispatching.
 * **Folders**:
   * `~/.config/ervisio/plugins/database` (created on first use; saved connections, preferences).

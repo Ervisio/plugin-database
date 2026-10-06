@@ -15,6 +15,12 @@ from typing import Dict, Any, List, Optional
 
 import re
 
+IS_WINDOWS = os.name == "nt"
+
+# JSON goes out as UTF-8 on every system (the Windows console code page would mangle it).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 IDENT_RE = re.compile(r"^[A-Za-z0-9_$]{1,64}$")
 
 def check_ident(name: str, what: str = "identifier"):
@@ -46,12 +52,45 @@ def send_error(msg: str, code: str = "error"):
 
 def run_cmd(cmd: List[str], timeout: int = 300) -> str:
     try:
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        extra: Dict[str, Any] = {}
+        if IS_WINDOWS:
+            extra["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout, **extra)
         if p.returncode != 0:
             raise RuntimeError(p.stderr.strip() or f"Command failed with exit code {p.returncode}")
         return p.stdout
     except Exception as e:
         raise RuntimeError(f"Execution error: {e}")
+
+def privileged(cmd: List[str]) -> List[str]:
+    """Linux: prefix with sudo unless already root. Windows: the manifest runs the bridge elevated, no prefix."""
+    if IS_WINDOWS or (hasattr(os, "geteuid") and os.geteuid() == 0):
+        return cmd
+    return ["sudo"] + cmd
+
+def tail_file(path: str, lines: int = 100) -> str:
+    """Last lines of a text file (no external `tail`, which Windows does not have)."""
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        fh.seek(max(0, size - 256 * 1024))
+        data = fh.read()
+    return "\n".join(data.decode("utf-8", "replace").splitlines()[-lines:])
+
+SERVICE_RE = re.compile(r"^[A-Za-z0-9_.$-]{1,80}$")
+
+def windows_database_services() -> List[Dict[str, str]]:
+    """MariaDB, MySQL and PostgreSQL services registered with the Windows service manager."""
+    script = (
+        "Get-Service | Where-Object { $_.Name -match '^(mariadb|mysql|postgresql)' } | "
+        "Select-Object Name, @{n='State';e={$_.Status.ToString()}} | ConvertTo-Json -Compress"
+    )
+    out = run_cmd(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=60).strip()
+    if not out:
+        return []
+    data = json.loads(out)
+    return data if isinstance(data, list) else [data]
 
 # Database connection helpers
 def get_mysql_conn(instance: Dict[str, Any], database: Optional[str] = None):
@@ -63,7 +102,7 @@ def get_mysql_conn(instance: Dict[str, Any], database: Optional[str] = None):
     unix_socket = instance.get("unix_socket")
 
     # If unix socket exists and host is localhost/127.0.0.1, try unix socket
-    if not unix_socket and (host in ("localhost", "127.0.0.1")):
+    if not unix_socket and not IS_WINDOWS and (host in ("localhost", "127.0.0.1")):
         for sock in ["/var/run/mysqld/mysqld.sock", "/var/run/mysql/mysql.sock", "/tmp/mysql.sock"]:
             if os.path.exists(sock):
                 unix_socket = sock
@@ -114,58 +153,130 @@ def get_sqlite_conn(path: str):
     return conn
 
 # Actions
+WIN_SKIP_DIRS = {"appdata", "node_modules", ".git", "windows", "docker", "$recycle.bin"}
+
+def find_sqlite_windows(max_per_root: int = 15, max_depth: int = 4) -> List[Dict[str, Any]]:
+    """Shallow walk of the user profile and %ProgramData%, skipping AppData and other noisy folders."""
+    found: List[Dict[str, Any]] = []
+    roots = [os.path.expanduser("~"), os.environ.get("ProgramData", r"C:\ProgramData")]
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        count = 0
+        base_depth = root.rstrip("\\/").count(os.sep)
+        for dirpath, dirnames, filenames in os.walk(root):
+            if dirpath.rstrip("\\/").count(os.sep) - base_depth >= max_depth:
+                dirnames[:] = []
+            dirnames[:] = [d for d in dirnames if d.lower() not in WIN_SKIP_DIRS]
+            for fn in filenames:
+                if not fn.lower().endswith((".db", ".sqlite", ".sqlite3")):
+                    continue
+                f = os.path.join(dirpath, fn)
+                try:
+                    size = os.path.getsize(f)
+                except OSError:
+                    continue
+                found.append({
+                    "id": f"sqlite-{base64.b64encode(f.encode()).decode()[:16]}",
+                    "name": fn,
+                    "path": f,
+                    "type": "sqlite",
+                    "engine": "sqlite",
+                    "mode": "file",
+                    "status": "ready",
+                    "size": size
+                })
+                count += 1
+                if count >= max_per_root:
+                    break
+            if count >= max_per_root:
+                break
+    return found
+
 def action_detect() -> Dict[str, Any]:
     instances = []
     
-    # 1. Native systemd services
-    try:
-        units_out = run_cmd(["systemctl", "list-units", "--type=service", "--state=all", "--no-pager", "--no-legend"])
-        for line in units_out.splitlines():
-            parts = line.split()
-            if not parts:
-                continue
-            unit = parts[0]
-            if "mariadb" in unit:
-                is_active = "running" in line
+    # 1. Native services (systemd on Linux, the service manager on Windows)
+    if IS_WINDOWS:
+        try:
+            seen = set()
+            for svc in windows_database_services():
+                name = svc.get("Name", "")
+                low = name.lower()
+                if low.startswith("mariadb"):
+                    db_type, engine, port, label = "mariadb", "mysql", 3306, "MariaDB"
+                elif low.startswith("mysql"):
+                    db_type, engine, port, label = "mysql", "mysql", 3306, "MySQL"
+                elif low.startswith("postgresql"):
+                    db_type, engine, port, label = "postgres", "postgres", 5432, "PostgreSQL"
+                else:
+                    continue
+                if db_type in seen:
+                    continue
+                seen.add(db_type)
                 instances.append({
-                    "id": "native-mariadb",
-                    "name": "MariaDB (Native Systemd)",
-                    "type": "mariadb",
-                    "engine": "mysql",
+                    "id": f"native-{db_type}",
+                    "name": f"{label} (Windows service)",
+                    "type": db_type,
+                    "engine": engine,
                     "mode": "native",
+                    "service": name,
                     "host": "127.0.0.1",
-                    "port": 3306,
-                    "status": "running" if is_active else "stopped",
+                    "port": port,
+                    "status": "running" if svc.get("State") == "Running" else "stopped",
                     "version": "native"
                 })
-            elif "mysql" in unit and "native-mariadb" not in [x["id"] for x in instances]:
-                is_active = "running" in line
-                instances.append({
-                    "id": "native-mysql",
-                    "name": "MySQL (Native Systemd)",
-                    "type": "mysql",
-                    "engine": "mysql",
-                    "mode": "native",
-                    "host": "127.0.0.1",
-                    "port": 3306,
-                    "status": "running" if is_active else "stopped",
-                    "version": "native"
-                })
-            elif "postgres" in unit:
-                is_active = "running" in line
-                instances.append({
-                    "id": "native-postgres",
-                    "name": "PostgreSQL (Native Systemd)",
-                    "type": "postgres",
-                    "engine": "postgres",
-                    "mode": "native",
-                    "host": "127.0.0.1",
-                    "port": 5432,
-                    "status": "running" if is_active else "stopped",
-                    "version": "native"
-                })
-    except Exception:
-        pass
+        except Exception:
+            pass
+    else:
+        try:
+            units_out = run_cmd(["systemctl", "list-units", "--type=service", "--state=all", "--no-pager", "--no-legend"])
+            for line in units_out.splitlines():
+                parts = line.split()
+                if not parts:
+                    continue
+                unit = parts[0]
+                if "mariadb" in unit:
+                    is_active = "running" in line
+                    instances.append({
+                        "id": "native-mariadb",
+                        "name": "MariaDB (Native Systemd)",
+                        "type": "mariadb",
+                        "engine": "mysql",
+                        "mode": "native",
+                        "host": "127.0.0.1",
+                        "port": 3306,
+                        "status": "running" if is_active else "stopped",
+                        "version": "native"
+                    })
+                elif "mysql" in unit and "native-mariadb" not in [x["id"] for x in instances]:
+                    is_active = "running" in line
+                    instances.append({
+                        "id": "native-mysql",
+                        "name": "MySQL (Native Systemd)",
+                        "type": "mysql",
+                        "engine": "mysql",
+                        "mode": "native",
+                        "host": "127.0.0.1",
+                        "port": 3306,
+                        "status": "running" if is_active else "stopped",
+                        "version": "native"
+                    })
+                elif "postgres" in unit:
+                    is_active = "running" in line
+                    instances.append({
+                        "id": "native-postgres",
+                        "name": "PostgreSQL (Native Systemd)",
+                        "type": "postgres",
+                        "engine": "postgres",
+                        "mode": "native",
+                        "host": "127.0.0.1",
+                        "port": 5432,
+                        "status": "running" if is_active else "stopped",
+                        "version": "native"
+                    })
+        except Exception:
+            pass
 
     # 2. Docker database containers
     try:
@@ -219,9 +330,11 @@ def action_detect() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 3. Known SQLite files in /home/ubuntu and /var/lib
+    # 3. Known SQLite files (/home/ubuntu and /var/lib; the profile and ProgramData on Windows)
     sqlite_files = []
-    for root_dir in ["/home/ubuntu", "/var/lib"]:
+    if IS_WINDOWS:
+        sqlite_files = find_sqlite_windows()
+    for root_dir in ([] if IS_WINDOWS else ["/home/ubuntu", "/var/lib"]):
         try:
             for ext in ["*.db", "*.sqlite", "*.sqlite3"]:
                 for f in glob.glob(os.path.join(root_dir, "**", ext), recursive=True)[:15]:
@@ -277,7 +390,32 @@ def action_install_docker(params: Dict[str, Any]) -> Dict[str, Any]:
     cid = run_cmd(cmd).strip()
     return {"ok": True, "container_id": cid, "name": name, "port": port}
 
+WINGET_IDS = {
+    "mariadb": "MariaDB.Server",
+    "mysql": "Oracle.MySQL",
+    "postgres": "PostgreSQL.PostgreSQL.17",
+    "sqlite": "SQLite.SQLite",
+}
+
+def action_install_winget(params: Dict[str, Any]) -> Dict[str, Any]:
+    engine = params.get("engine", "mariadb")
+    pkg = WINGET_IDS.get(engine)
+    if not pkg:
+        raise RuntimeError(f"Unsupported engine: {engine}")
+    cmd = ["winget.exe", "install", "--id", pkg, "-e", "--silent",
+           "--accept-package-agreements", "--accept-source-agreements"]
+    if engine == "postgres":
+        password = str(params.get("password", "")).strip()
+        if password:
+            if '"' in password:
+                raise RuntimeError("The password cannot contain double quotes")
+            cmd += ["--override", f'--mode unattended --superpassword "{password}"']
+    run_cmd(cmd, timeout=1200)
+    return {"ok": True, "engine": engine, "package": pkg}
+
 def action_install_apt(params: Dict[str, Any]) -> Dict[str, Any]:
+    if IS_WINDOWS:
+        return action_install_winget(params)
     engine = params.get("engine", "mariadb") # mariadb, mysql, postgres, sqlite
     pkg_map = {
         "mariadb": "mariadb-server",
@@ -286,18 +424,19 @@ def action_install_apt(params: Dict[str, Any]) -> Dict[str, Any]:
         "sqlite": "sqlite3"
     }
     pkg = pkg_map.get(engine, "mariadb-server")
-    run_cmd(["sudo", "apt-get", "update"], timeout=120)
-    run_cmd(["sudo", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", pkg], timeout=300)
+    run_cmd(privileged(["apt-get", "update"]), timeout=120)
+    run_cmd(privileged(["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", pkg]), timeout=300)
     if engine in ("mariadb", "mysql"):
-        run_cmd(["sudo", "systemctl", "enable", "--now", engine])
+        run_cmd(privileged(["systemctl", "enable", "--now", engine]))
     elif engine == "postgres":
-        run_cmd(["sudo", "systemctl", "enable", "--now", "postgresql"])
+        run_cmd(privileged(["systemctl", "enable", "--now", "postgresql"]))
     return {"ok": True, "engine": engine, "package": pkg}
 
 def action_create_sqlite(params: Dict[str, Any]) -> Dict[str, Any]:
     path = params.get("path", "").strip()
     if not path:
         raise RuntimeError("File path is required for SQLite database")
+    path = os.path.expanduser(path)
     if not path.endswith(".sqlite") and not path.endswith(".db"):
         path = path + ".sqlite"
     dir_name = os.path.dirname(os.path.abspath(path))
@@ -324,10 +463,23 @@ def action_manage_instance(params: Dict[str, Any]) -> Dict[str, Any]:
             run_cmd(["docker", "restart", target])
         elif op == "remove":
             run_cmd(["docker", "rm", "-f", target])
+    elif mode == "native" and IS_WINDOWS:
+        if not SERVICE_RE.match(target or ""):
+            raise RuntimeError(f"Invalid service name: {target!r}")
+        if op == "start":
+            run_cmd(["net.exe", "start", target], timeout=180)
+        elif op == "stop":
+            run_cmd(["net.exe", "stop", target], timeout=180)
+        elif op == "restart":
+            try:
+                run_cmd(["net.exe", "stop", target], timeout=180)
+            except RuntimeError:
+                pass  # already stopped
+            run_cmd(["net.exe", "start", target], timeout=180)
     elif mode == "native":
         svc = "mariadb" if "mariadb" in target else ("mysql" if "mysql" in target else "postgresql")
         if op in ("start", "stop", "restart"):
-            run_cmd(["sudo", "systemctl", op, svc])
+            run_cmd(privileged(["systemctl", op, svc]))
     return {"ok": True, "op": op, "target": target}
 
 def action_list_databases(instance: Dict[str, Any]) -> Dict[str, Any]:
@@ -1108,7 +1260,7 @@ def action_get_logs(instance: Dict[str, Any]) -> Dict[str, Any]:
             # Try to read last 50 lines of slow log if file exists
             fpath = status.get("log_file")
             if fpath and os.path.exists(fpath):
-                log_content = run_cmd(["tail", "-n", "100", fpath])
+                log_content = tail_file(fpath, 100)
         finally:
             conn.close()
     return {"status": status, "content": log_content}
@@ -1144,7 +1296,11 @@ def read_payload_file(name: str) -> str:
             homes.insert(0, pwd.getpwnam(sudo_user).pw_dir)
         except Exception:
             pass
-    homes += sorted(glob.glob("/home/*")) + ["/root"]
+    if IS_WINDOWS:
+        users = os.path.join(os.environ.get("SystemDrive", "C:") + os.sep, "Users", "*")
+        homes += sorted(glob.glob(users))
+    else:
+        homes += sorted(glob.glob("/home/*")) + ["/root"]
     for home in homes:
         path = os.path.join(home, PAYLOAD_SUBDIR, name + ".json")
         if os.path.isfile(path):
@@ -1185,6 +1341,8 @@ def main():
     try:
         if action == "detect":
             send_json(action_detect())
+        elif action == "install-winget":
+            send_json(action_install_winget(params))
         elif action == "install-docker":
             send_json(action_install_docker(params))
         elif action == "install-apt":
