@@ -35,7 +35,7 @@ export function InstancesView({ search }: { search: string }) {
   const manage = async (inst: DbInstance, op: 'start' | 'stop' | 'restart' | 'remove') => {
     setBusyId(inst.id);
     try {
-      await dbApi.manageInstance({ op, mode: inst.mode, target: inst.container || inst.id });
+      await dbApi.manageInstance({ op, mode: inst.mode, target: inst.service || inst.container || inst.id });
       toast.ok(t('Done: {op}', { op }), inst.name);
       invalidateInstance(inst, 'all');
       await detectCache.get([], true);
@@ -187,6 +187,7 @@ function randomPassword(): string {
 }
 
 function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): void; versions: Record<string, string[]> }) {
+  const isWindows = getSdk().platform === 'windows';
   const [mode, setMode] = useState<'docker' | 'apt' | 'sqlite'>('docker');
   const [engine, setEngine] = useState('mysql');
   const [version, setVersion] = useState('');
@@ -194,7 +195,7 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
   const [password, setPassword] = useState(() => randomPassword());
   const [port, setPort] = useState('3306');
   const [aptEngine, setAptEngine] = useState('mariadb');
-  const [sqlitePath, setSqlitePath] = useState('/home/ubuntu/database.sqlite');
+  const [sqlitePath, setSqlitePath] = useState(isWindows ? 'C:\\ProgramData\\Ervisio\\data\\database.sqlite' : '/home/ubuntu/database.sqlite');
   const [busy, setBusy] = useState(false);
 
   const vlist = versions[engine] ?? ['latest'];
@@ -207,7 +208,7 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
         await dbApi.installDocker({ engine, version: ver, name, password, port: parseInt(port, 10) || 3306 });
         toast.ok(t('Engine deployed'), t('{name} is running in Docker', { name }));
       } else if (mode === 'apt') {
-        await dbApi.installApt({ engine: aptEngine });
+        await dbApi.installApt(isWindows && aptEngine === 'postgres' ? { engine: aptEngine, password } : { engine: aptEngine });
         toast.ok(t('Native service installed'), aptEngine);
       } else {
         const res = await dbApi.createSqlite({ path: sqlitePath });
@@ -237,7 +238,7 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
           aria-label={t('Deploy mode')}
           value={mode}
           onChange={(v) => setMode(v as typeof mode)}
-          options={[{ value: 'docker', label: 'Docker' }, { value: 'apt', label: t('Native (APT)') }, { value: 'sqlite', label: 'SQLite' }]}
+          options={[{ value: 'docker', label: 'Docker' }, { value: 'apt', label: isWindows ? t('Native (winget)') : t('Native (APT)') }, { value: 'sqlite', label: 'SQLite' }]}
         />
         {mode === 'docker' && (
           <>
@@ -275,14 +276,29 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
               label={t('Package')}
               value={aptEngine}
               onChange={setAptEngine}
-              options={[
+              options={isWindows ? [
+                { value: 'mariadb', label: 'MariaDB Server (MariaDB.Server)' },
+                { value: 'mysql', label: 'MySQL Server (Oracle.MySQL)' },
+                { value: 'postgres', label: 'PostgreSQL (PostgreSQL.PostgreSQL.17)' },
+                { value: 'sqlite', label: 'SQLite (SQLite.SQLite)' },
+              ] : [
                 { value: 'mariadb', label: 'MariaDB Server (mariadb-server)' },
                 { value: 'mysql', label: 'MySQL Server (mysql-server)' },
                 { value: 'postgres', label: 'PostgreSQL (postgresql)' },
                 { value: 'sqlite', label: 'SQLite3 tools (sqlite3)' },
               ]}
             />
-            <div className="db-note"><Icon name="info" /><span>{t('Runs apt-get install in the background, then enables and starts the systemd service.')}</span></div>
+            {isWindows && aptEngine === 'postgres' && (
+              <Input
+                label={t('Superuser password')}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                mono
+                hint={t('Set as the postgres password by the installer. Copy it now.')}
+                end={<IconButton icon="refresh" label={t('Generate')} size="sm" onClick={() => setPassword(randomPassword())} />}
+              />
+            )}
+            <div className="db-note"><Icon name="info" /><span>{isWindows ? t('Runs winget install in the background; the engine is registered as a Windows service.') : t('Runs apt-get install in the background, then enables and starts the systemd service.')}</span></div>
           </>
         )}
         {mode === 'sqlite' && (

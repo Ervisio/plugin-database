@@ -1,7 +1,7 @@
 {
   "name": "ervisio-plugin-database",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@ervisio/plugin-sdk": "github:Ervisio/plugin-sdk#v0.2.0",
+    "@ervisio/plugin-sdk": "github:Ervisio/plugin-sdk#v0.3.0",
     "@types/react": "^18.3.18",
     "typescript": "^5.7.3",
     "vite": "^8.3.2"

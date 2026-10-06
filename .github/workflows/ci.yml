@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  ERVISIO_REF: v0.5.0
+  ERVISIO_REF: v0.6.2
 
 jobs:
   build:
@@ -58,3 +58,24 @@ jobs:
           name: plugin
           path: dist/*.tar.gz*
           retention-days: 7
+
+  bridge-windows:
+    # The bridge has to start and run its system-independent actions on Windows too.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile
+        run: python -m py_compile db-bridge.py
+      - name: Smoke test (detect, create-sqlite, query)
+        shell: bash
+        run: |
+          python db-bridge.py detect | python -c "import json,sys; d=json.load(sys.stdin); assert 'instances' in d"
+          db="$RUNNER_TEMP/smoke.sqlite"
+          python db-bridge.py create-sqlite "$(printf '{"path":"%s"}' "$(cygpath -m "$db")" | base64 -w0)" | python -c "import json,sys; assert json.load(sys.stdin)['ok']"
+          inst="$(printf '{"instance":{"engine":"sqlite","path":"%s"},"sql":"SELECT 1 AS n"}' "$(cygpath -m "$db")" | base64 -w0)"
+          python db-bridge.py query "$inst" | python -c "import json,sys; d=json.load(sys.stdin); assert d['rows'][0]['n']==1, d"
