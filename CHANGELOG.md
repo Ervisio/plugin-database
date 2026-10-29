@@ -2,6 +2,15 @@
 
 All notable changes to the Ervisio Database Plugin will be documented in this file.
 
+## 1.2.1 - 2026-10-29
+
+- Run CI manually instead of on every push and pull request
+- Add one-command plugin release and marketplace registration (#4)
+- Add MongoDB and Redis/Valkey drivers, Docker and local service discovery
+- README: one-button releases
+- One-button releases with the SDK's release workflow
+- Add Windows support (SDK 0.3.0, platforms manifest, cross-platform bridge)
+
 ## 1.2.0
 
 * Windows support (needs Ervisio 0.6.2 and `@ervisio/plugin-sdk` 0.3.0): the manifest declares `platforms: ["linux", "windows"]` and a separate `db-bridge` command for Windows (`python.exe`).
