@@ -1,8 +1,8 @@
 # Database plugin for Ervisio
 
-Manage SQL databases directly from [Ervisio](https://github.com/Ervisio/ervisio): full HeidiSQL-grade database management
-for **MySQL**, **MariaDB**, **PostgreSQL**, and **SQLite**. Deploy multi-version database containers in Docker or install
-native systemd services via APT with zero terminal steps. English and Italian interface.
+Manage SQL and NoSQL databases directly from [Ervisio](https://github.com/Ervisio/ervisio): full HeidiSQL-grade database management
+for **MySQL**, **MariaDB**, **PostgreSQL**, **SQLite**, **MongoDB** and **Redis** (also Valkey, KeyDB, Memurai). Deploy multi-version
+database containers in Docker or install native services with zero terminal steps. English and Italian interface.
 
 The plugin provides a complete database workbench inside Ervisio's sandboxed UI frame:
 * **The page** (this repository's `src/`): an Ervisio plugin (SDK contract 3) with full dark-mode styling, responsive schema tree, live data grid, and CodeMirror SQL editor.
@@ -16,11 +16,15 @@ The dialog lists the permissions below; updates appear in **Plugins › Updates*
 ## What it does
 
 * **Instances & Engine Deployment (Zero Terminal Steps)**:
-  * **🐳 Docker Containers**: 1-click deployment for MySQL (8.4-LTS, 8.0, 9.0, 5.7), MariaDB (11.4-LTS, 11.2, 10.11-LTS, 10.6), and PostgreSQL (17, 16, 15, 14) with custom ports, container names, and persistent volumes.
-  * **🖥️ Native Systemd Services**: 1-click installation via APT package manager (`mariadb-server`, `mysql-server`, `postgresql`, `sqlite3`). Automatically starts and enables the systemd service.
+  * **🐳 Docker Containers**: 1-click deployment for MySQL (8.4-LTS, 8.0, 9.0, 5.7), MariaDB (11.4-LTS, 11.2, 10.11-LTS, 10.6), PostgreSQL (17, 16, 15, 14), MongoDB (8.0, 7.0, 6.0), Redis (7.4, 7.2, 6.2) and Valkey (8.1, 8.0, 7.2) with custom ports, container names, and persistent volumes. Existing containers are detected from their image (`mongo`, `bitnami/mongodb`, `redis`, `redis-stack`, `valkey/valkey`, `keydb`, ...) and their password is read from the container configuration, so they open without asking for credentials.
+  * **🖥️ Native Services**: 1-click installation via APT (`mariadb-server`, `mysql-server`, `postgresql`, `redis-server`, `valkey-server`, `sqlite3`, and `mongodb-org` from the official MongoDB repository) or winget on Windows (`MongoDB.Server`, `Memurai.MemuraiDeveloper` for Redis). Systemd units and Windows services of every supported engine are detected and can be started, stopped and restarted from the card view.
+  * **🔌 Local ports**: engines listening on their default port (3306, 5432, 27017, 6379) that no service manager or Docker reports (started by hand, portable builds) are listed too.
   * **📁 SQLite Files**: Instant creation of `.sqlite` / `.db` database files anywhere on the filesystem, plus auto-discovery of existing SQLite databases in `/home` and `/var/lib`.
-  * **🔗 Remote & Custom Connections**: Connect to any external or pre-existing MySQL or PostgreSQL host.
-  * **Lifecycle Management**: Start, stop, and restart database containers or native systemd services directly from the card view.
+  * **🔗 Remote & Custom Connections**: Connect to any external or pre-existing MySQL, PostgreSQL, MongoDB or Redis host.
+  * **Lifecycle Management**: Start, stop, and restart database containers or native services directly from the card view.
+* **NoSQL engines** use the same workbench:
+  * **MongoDB**: databases and collections in the tree, documents in the grid (top-level fields as columns, `_id` as key, nested values as JSON), quick search, per-field filters and a JSON filter, inline editing that keeps the field types, inferred schema and indexes in Structure, mongosh-style queries (`db.users.find({ age: { $gt: 30 } }).sort({ age: -1 })`, `aggregate`, `insertOne`, `updateMany`, `createIndex`, `runCommand`, `show collections`, ...), users and roles, and the database profiler as slow log.
+  * **Redis / Valkey / KeyDB**: numbered databases, key patterns (`*` and the common prefixes such as `user:*`) as tables, keys as rows with type, TTL and value (hash, list, set, zset as JSON), edit values, TTL and key names inline, one command per line in the Query tab, ACL users and `SLOWLOG`.
 * **HeidiSQL-Grade Schema Explorer**:
   * Visual tree of databases, tables, and views with size metrics and row counts.
   * Create, alter, and drop databases with charset and collation options.
@@ -51,9 +55,9 @@ Needs Ervisio 0.6.2 or later on Windows and Python 3.10+ (`python.exe` on the `P
 The plugin lives in `%ProgramData%\Ervisio\data\plugins\database`. On Windows:
 
 * **Docker**: Docker Desktop or Docker Engine (`docker.exe` on the `PATH`).
-* **Native**: MariaDB, MySQL and PostgreSQL registered as Windows services are detected and started, stopped and restarted from the card view; installation uses `winget`.
+* **Native**: MariaDB, MySQL, PostgreSQL, MongoDB and Redis (Memurai) registered as Windows services are detected and started, stopped and restarted from the card view; installation uses `winget`.
 * **Administrator rights**: operations that install or control services need the administrator unlock in Ervisio (members of `docker-users` run Docker commands as themselves).
-* The Python packages `pymysql` and `psycopg2` must be installed for that Python (`pip install pymysql psycopg2-binary`); SQLite needs nothing.
+* The Python packages `pymysql`, `psycopg2`, `pymongo` and `redis` must be installed for that Python (`pip install pymysql psycopg2-binary pymongo redis`); each one is needed only for its engine, SQLite needs nothing.
 
 ## Permissions
 
@@ -106,7 +110,7 @@ src/
   views/
     InstancesView.tsx   database instance manager and 1-click deployment modal
     ExplorerView.tsx    HeidiSQL studio: Schema tree, Data grid, SQL runner, Users, Logs
-db-bridge.py            backend Python executor (Docker, APT, PyMySQL, Psycopg2, SQLite)
+db-bridge.py            backend Python executor (Docker, APT, PyMySQL, Psycopg2, SQLite, PyMongo, redis-py)
 ```
 
 ## Releasing

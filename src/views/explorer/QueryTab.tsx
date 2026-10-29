@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SQLNamespace } from '@codemirror/lang-sql';
-import { databasesCache, dbApi, invalidateInstance, structureCache, tablesCache, type DbInstance, type QueryResult } from '../../api';
+import { databasesCache, dbApi, invalidateInstance, isNoSql, structureCache, tablesCache, type DbInstance, type QueryResult } from '../../api';
 import { invalidate } from '../../store';
 import { ensureFile, pushHistory, setFile, useFile, useSettings, type QueryTabState } from '../../settings';
 import { getSdk } from '../../sdk';
@@ -19,6 +19,18 @@ interface RunState {
 
 /** Results per instance + tab, kept while the plugin is open so coming back shows the last result. */
 const results = new Map<string, RunState>();
+
+/** Statements that cannot change data, so cached grids stay valid. */
+const READ_ONLY: Record<string, RegExp> = {
+  sql: /^\s*(select|with|show|describe|desc|explain|pragma)\b/i,
+  mongodb: /^\s*(show\b|db\s*\.\s*(stats|getCollectionNames)\s*\(|db\s*\.[\w$.]+?\.\s*(find|findOne|aggregate|countDocuments|count|estimatedDocumentCount|distinct|getIndexes|stats)\s*\()/i,
+  redis: /^\s*(get|mget|getrange|strlen|exists|type|ttl|pttl|keys|scan|sscan|hscan|zscan|hget|hgetall|hmget|hkeys|hvals|hlen|lrange|llen|lindex|smembers|scard|sismember|zrange|zrangebyscore|zrevrange|zscore|zcard|zcount|xrange|xrevrange|xlen|info|dbsize|ping|time|memory|object|config\s+get|slowlog\s+get|client\s+list|acl\s+(list|whoami|getuser))\b[^\n]*$/i,
+};
+
+const PLACEHOLDER: Record<string, string> = {
+  mongodb: "mongosh syntax: db.users.find({ age: { $gt: 30 } }).limit(20);  Ctrl+Enter runs the statement under the cursor",
+  redis: 'One Redis command per line, e.g. HGETALL user:1  Ctrl+Enter runs the line under the cursor',
+};
 
 const newTab = (n: number): QueryTabState => ({ id: `q${Date.now().toString(36)}${n}`, title: `Query ${n}`, sql: '' });
 
@@ -89,8 +101,9 @@ export function QueryTab({ inst, db, table, onDbChange }: { inst: DbInstance; db
       return;
     }
     const stmts = statementRanges(sqlText);
+    const nosql = isNoSql(inst.engine);
     let limited: number | undefined;
-    if (settings.autoLimit > 0 && stmts.length === 1 && /^\s*(select|with)\b/i.test(stmts[0].sql) && !/\blimit\s+\d+/i.test(stmts[0].sql)) {
+    if (!nosql && settings.autoLimit > 0 && stmts.length === 1 && /^\s*(select|with)\b/i.test(stmts[0].sql) && !/\blimit\s+\d+/i.test(stmts[0].sql)) {
       sqlText = `${stmts[0].sql.replace(/;\s*$/, '')} LIMIT ${settings.autoLimit}`;
       limited = settings.autoLimit;
     }
@@ -100,12 +113,12 @@ export function QueryTab({ inst, db, table, onDbChange }: { inst: DbInstance; db
       const res = await dbApi.query(inst, { database: db || undefined, sql: sqlText });
       setRun({ result: res, sql: sqlText, limited });
       void pushHistory({ sql: text.trim(), at: started, instance: inst.name, ms: res.time_ms });
-      const readOnly = stmts.every((s) => /^\s*(select|with|show|describe|desc|explain|pragma)\b/i.test(s.sql));
+      const readOnly = stmts.every((s) => READ_ONLY[inst.engine]?.test(s.sql) ?? READ_ONLY.sql.test(s.sql));
       if (!readOnly) {
         invalidate((k) => k.startsWith(`browse:${inst.id}|`) || k.startsWith(`struct:${inst.id}|`));
         invalidateInstance(inst, 'tables');
-        if (stmts.some((s) => /\b(database|schema)\b/i.test(s.sql))) invalidateInstance(inst, 'dbs');
-        if (stmts.some((s) => /\b(user|grant|revoke)\b/i.test(s.sql))) invalidateInstance(inst, 'users');
+        if (nosql || stmts.some((s) => /\b(database|schema)\b/i.test(s.sql))) invalidateInstance(inst, 'dbs');
+        if (stmts.some((s) => /\b(user|grant|revoke|acl)\b/i.test(s.sql))) invalidateInstance(inst, 'users');
       }
     } catch (err: any) {
       setRun({ error: err.message, sql: sqlText });
@@ -130,7 +143,25 @@ export function QueryTab({ inst, db, table, onDbChange }: { inst: DbInstance; db
 
   const q = (n: string) => quoteIdent(inst.engine, n);
   const tpl = table || 'table_name';
-  const templates = [
+  const coll = /^[A-Za-z_$][\w$]*$/.test(table) ? `db.${table}` : `db.getCollection(${JSON.stringify(table || 'collection')})`;
+  const keyPat = table || '*';
+  const templates = inst.engine === 'mongodb' ? [
+    { id: 'find', label: 'find', sql: `${coll}.find({ field: 'value' }).sort({ _id: -1 }).limit(100);` },
+    { id: 'count', label: 'countDocuments', sql: `${coll}.countDocuments({});` },
+    { id: 'aggregate', label: 'aggregate', sql: `${coll}.aggregate([\n  { $match: {} },\n  { $group: { _id: '$field', n: { $sum: 1 } } },\n  { $sort: { n: -1 } }\n]);` },
+    { id: 'insert', label: 'insertOne', sql: `${coll}.insertOne({ name: 'value', createdAt: ISODate() });` },
+    { id: 'update', label: 'updateOne', sql: `${coll}.updateOne({ _id: ObjectId('...') }, { $set: { field: 'value' } });` },
+    { id: 'delete', label: 'deleteOne', sql: `${coll}.deleteOne({ _id: ObjectId('...') });` },
+    { id: 'index', label: 'createIndex', sql: `${coll}.createIndex({ field: 1 }, { unique: false });` },
+    { id: 'cmd', label: 'runCommand', sql: `db.runCommand({ serverStatus: 1 });` },
+  ] : inst.engine === 'redis' ? [
+    { id: 'scan', label: 'SCAN', sql: `SCAN 0 MATCH ${keyPat} COUNT 100` },
+    { id: 'get', label: 'GET / SET', sql: `SET mykey "hello" EX 3600\nGET mykey` },
+    { id: 'hash', label: 'HSET / HGETALL', sql: `HSET user:1 name "Ada" role "admin"\nHGETALL user:1` },
+    { id: 'list', label: 'LPUSH / LRANGE', sql: `LPUSH queue "job1" "job2"\nLRANGE queue 0 -1` },
+    { id: 'zset', label: 'ZADD / ZRANGE', sql: `ZADD scores 10 "ada" 20 "bob"\nZRANGE scores 0 -1 WITHSCORES` },
+    { id: 'info', label: 'INFO', sql: `INFO server` },
+  ] : [
     { id: 'select', label: 'SELECT', sql: `SELECT *\nFROM ${q(tpl)}\nWHERE 1 = 1\nLIMIT 100;` },
     { id: 'count', label: 'COUNT', sql: `SELECT COUNT(*) FROM ${q(tpl)};` },
     { id: 'insert', label: 'INSERT', sql: `INSERT INTO ${q(tpl)} (column1, column2)\nVALUES ('value1', 'value2');` },
@@ -229,7 +260,8 @@ export function QueryTab({ inst, db, table, onDbChange }: { inst: DbInstance; db
         onRun={runCurrent}
         onRunAll={runAll}
         apiRef={editor}
-        placeholder={t('Write SQL… Ctrl+Enter runs the statement under the cursor, Ctrl+Space completes names')}
+        lineMode={inst.engine === 'redis'}
+        placeholder={PLACEHOLDER[inst.engine] ? t(PLACEHOLDER[inst.engine]) : t('Write SQL… Ctrl+Enter runs the statement under the cursor, Ctrl+Space completes names')}
       />
 
       {run.error && <div className="db-qerr" role="alert">{run.error}</div>}
@@ -251,7 +283,7 @@ export function QueryTab({ inst, db, table, onDbChange }: { inst: DbInstance; db
                 items={[
                   { id: 'csv', label: 'CSV', icon: 'download', onSelect: () => void exportResult('csv') },
                   { id: 'json', label: 'JSON', icon: 'download', onSelect: () => void exportResult('json') },
-                  { id: 'sql', label: 'SQL INSERT', icon: 'download', onSelect: () => void exportResult('sql') },
+                  ...(isNoSql(inst.engine) ? [] : [{ id: 'sql', label: 'SQL INSERT', icon: 'download', onSelect: () => void exportResult('sql') }]),
                 ]}
                 trigger={(p) => <Button size="sm" variant="secondary" icon="download" {...(p as any)}>{t('Export')}</Button>}
               />

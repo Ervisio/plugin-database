@@ -79,20 +79,20 @@ export function InstancesView({ search }: { search: string }) {
           <span className="db-eng-ic"><Icon name={engineIcon(inst.type)} /></span>
           <div className="db-eng-t">
             <b title={inst.name}>{inst.name}</b>
-            <span>{inst.type.toUpperCase()}{inst.version ? ` ${inst.version}` : ''} · {inst.mode === 'docker' ? 'Docker' : inst.mode === 'native' ? t('Native') : 'SQLite'}</span>
+            <span>{inst.type.toUpperCase()}{inst.version ? ` ${inst.version}` : ''} · {MODE_LABEL[inst.mode]?.() ?? inst.mode}</span>
           </div>
           <span className={`db-dot ${up ? 'db-dot--ok' : 'db-dot--warn'}`} title={inst.status} />
         </div>
         {inst.port ? <div className="db-kv"><span>{t('Address')}</span><code>{inst.host || '127.0.0.1'}:{inst.port}</code></div> : null}
         {inst.path && <div className="db-kv"><span>{t('File')}</span><code>{inst.path}</code></div>}
         <div className="db-eng-f" onClick={stop}>
-          {inst.mode === 'docker' && (
+          {(inst.mode === 'docker' || (inst.mode === 'native' && inst.service)) && (
             <>
               {up
                 ? <IconButton icon="stop" label={t('Stop')} size="sm" loading={busyId === inst.id} onClick={() => manage(inst, 'stop')} />
                 : <IconButton icon="play" label={t('Start')} size="sm" loading={busyId === inst.id} onClick={() => manage(inst, 'start')} />}
               <IconButton icon="refresh" label={t('Restart')} size="sm" onClick={() => manage(inst, 'restart')} />
-              <IconButton icon="trash" label={t('Remove container')} size="sm" onClick={() => setPendingDelete(inst)} />
+              {inst.mode === 'docker' && <IconButton icon="trash" label={t('Remove container')} size="sm" onClick={() => setPendingDelete(inst)} />}
             </>
           )}
           <IconButton icon="copy" label={t('Copy connection string')} size="sm" onClick={() => copyConn(inst)} />
@@ -108,7 +108,7 @@ export function InstancesView({ search }: { search: string }) {
       <PageHeader
         icon="db-database"
         title={t('Database engines')}
-        subtitle={t('MySQL, MariaDB, PostgreSQL and SQLite on this server')}
+        subtitle={t('MySQL, MariaDB, PostgreSQL, SQLite, MongoDB and Redis on this server')}
         actions={
           <>
             <IconButton icon="refresh" label={t('Refresh')} loading={det.loading} onClick={() => void det.refresh()} />
@@ -136,7 +136,7 @@ export function InstancesView({ search }: { search: string }) {
             <EmptyState
               icon="db-database"
               title={q ? t('No engines match “{q}”', { q: search }) : t('No databases found')}
-              text={q ? undefined : t('No MySQL, MariaDB, PostgreSQL or SQLite database was detected. Deploy one with one click.')}
+              text={q ? undefined : t('No SQL or NoSQL database was detected. Deploy one with one click.')}
               action={q ? undefined : <Button variant="primary" icon="plus" onClick={() => setOpenInstall(true)}>{t('New engine')}</Button>}
             />
           ) : (
@@ -179,6 +179,24 @@ export function InstancesView({ search }: { search: string }) {
   );
 }
 
+const MODE_LABEL: Record<string, () => string> = {
+  docker: () => 'Docker',
+  native: () => t('Native'),
+  local: () => t('Local port'),
+  file: () => 'SQLite',
+};
+
+const DEFAULT_PORT: Record<string, string> = { mysql: '3306', mariadb: '3306', postgres: '5432', mongodb: '27017', redis: '6379', valkey: '6379' };
+
+const DOCKER_ENGINES = [
+  { value: 'mysql', label: 'MySQL' },
+  { value: 'mariadb', label: 'MariaDB' },
+  { value: 'postgres', label: 'PostgreSQL' },
+  { value: 'mongodb', label: 'MongoDB' },
+  { value: 'redis', label: 'Redis' },
+  { value: 'valkey', label: 'Valkey' },
+];
+
 function randomPassword(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
   const b = new Uint8Array(20);
@@ -205,7 +223,7 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
     setBusy(true);
     try {
       if (mode === 'docker') {
-        await dbApi.installDocker({ engine, version: ver, name, password, port: parseInt(port, 10) || 3306 });
+        await dbApi.installDocker({ engine, version: ver, name, password, port: parseInt(port, 10) || parseInt(DEFAULT_PORT[engine], 10) });
         toast.ok(t('Engine deployed'), t('{name} is running in Docker', { name }));
       } else if (mode === 'apt') {
         await dbApi.installApt(isWindows && aptEngine === 'postgres' ? { engine: aptEngine, password } : { engine: aptEngine });
@@ -224,7 +242,7 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
   };
 
   return (
-    <Dialog open={open} onClose={onClose} title={t('New database engine')} description={t('Deploy MySQL, MariaDB or PostgreSQL, or create a SQLite file')} icon="plus" size="lg"
+    <Dialog open={open} onClose={onClose} title={t('New database engine')} description={t('Deploy MySQL, MariaDB, PostgreSQL, MongoDB, Redis or Valkey, or create a SQLite file')} icon="plus" size="lg"
       onSubmit={(e) => { e.preventDefault(); void submit(); }}
       footer={<>
         <Button variant="ghost" onClick={onClose}>{t('Cancel')}</Button>
@@ -249,10 +267,10 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
                 onChange={(v) => {
                   setEngine(v);
                   setName(`db-${v}`);
-                  setPort(v === 'postgres' ? '5432' : '3306');
+                  setPort(DEFAULT_PORT[v] ?? '3306');
                   setVersion('');
                 }}
-                options={[{ value: 'mysql', label: 'MySQL' }, { value: 'mariadb', label: 'MariaDB' }, { value: 'postgres', label: 'PostgreSQL' }]}
+                options={DOCKER_ENGINES}
               />
               <Select label={t('Version')} value={ver} onChange={setVersion} options={vlist.map((v) => ({ value: v, label: v }))} />
             </div>
@@ -261,7 +279,7 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
               <Input label={t('Host port')} value={port} onChange={(e) => setPort(e.target.value)} mono />
             </div>
             <Input
-              label={t('Root / superuser password')}
+              label={engine === 'redis' || engine === 'valkey' ? t('Password (requirepass)') : engine === 'mongodb' ? t('Password of the root user') : t('Root / superuser password')}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               mono
@@ -280,11 +298,16 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
                 { value: 'mariadb', label: 'MariaDB Server (MariaDB.Server)' },
                 { value: 'mysql', label: 'MySQL Server (Oracle.MySQL)' },
                 { value: 'postgres', label: 'PostgreSQL (PostgreSQL.PostgreSQL.17)' },
+                { value: 'mongodb', label: 'MongoDB Server (MongoDB.Server)' },
+                { value: 'redis', label: 'Redis for Windows (Memurai.MemuraiDeveloper)' },
                 { value: 'sqlite', label: 'SQLite (SQLite.SQLite)' },
               ] : [
                 { value: 'mariadb', label: 'MariaDB Server (mariadb-server)' },
                 { value: 'mysql', label: 'MySQL Server (mysql-server)' },
                 { value: 'postgres', label: 'PostgreSQL (postgresql)' },
+                { value: 'mongodb', label: 'MongoDB (mongodb-org, official repository)' },
+                { value: 'redis', label: 'Redis (redis-server)' },
+                { value: 'valkey', label: 'Valkey (valkey-server)' },
                 { value: 'sqlite', label: 'SQLite3 tools (sqlite3)' },
               ]}
             />
@@ -298,7 +321,7 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
                 end={<IconButton icon="refresh" label={t('Generate')} size="sm" onClick={() => setPassword(randomPassword())} />}
               />
             )}
-            <div className="db-note"><Icon name="info" /><span>{isWindows ? t('Runs winget install in the background; the engine is registered as a Windows service.') : t('Runs apt-get install in the background, then enables and starts the systemd service.')}</span></div>
+            <div className="db-note"><Icon name="info" /><span>{isWindows ? t('Runs winget install in the background; the engine is registered as a Windows service.') : aptEngine === 'mongodb' ? t('Adds the official MongoDB APT repository (repo.mongodb.org), installs mongodb-org, then enables and starts mongod.') : t('Runs apt-get install in the background, then enables and starts the systemd service.')}</span></div>
           </>
         )}
         {mode === 'sqlite' && (
@@ -312,8 +335,16 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
   );
 }
 
+type ConnectType = 'mysql' | 'postgres' | 'mongodb' | 'redis';
+const CONNECT_DEFAULTS: Record<ConnectType, { port: string; user: string }> = {
+  mysql: { port: '3306', user: 'root' },
+  postgres: { port: '5432', user: 'postgres' },
+  mongodb: { port: '27017', user: '' },
+  redis: { port: '6379', user: '' },
+};
+
 function ConnectDialog({ open, onClose, onConnect }: { open: boolean; onClose(): void; onConnect(inst: DbInstance): void }) {
-  const [type, setType] = useState<'mysql' | 'postgres'>('mysql');
+  const [type, setType] = useState<ConnectType>('mysql');
   const [host, setHost] = useState('127.0.0.1');
   const [port, setPort] = useState('3306');
   const [user, setUser] = useState('root');
@@ -323,7 +354,7 @@ function ConnectDialog({ open, onClose, onConnect }: { open: boolean; onClose():
   const submit = () => {
     const inst: DbInstance = {
       id: `custom-${type}-${host}-${port}-${user}`,
-      name: name.trim() || `${user}@${host}:${port}`,
+      name: name.trim() || (user ? `${user}@${host}:${port}` : `${host}:${port}`),
       type,
       engine: type,
       mode: 'native',
@@ -338,7 +369,7 @@ function ConnectDialog({ open, onClose, onConnect }: { open: boolean; onClose():
   };
 
   return (
-    <Dialog open={open} onClose={onClose} title={t('Connect to a database')} description={t('A local or remote MySQL, MariaDB or PostgreSQL server')} icon="link"
+    <Dialog open={open} onClose={onClose} title={t('Connect to a database')} description={t('A local or remote MySQL, MariaDB, PostgreSQL, MongoDB or Redis server')} icon="link"
       onSubmit={(e) => { e.preventDefault(); submit(); }}
       footer={<>
         <Button variant="ghost" onClick={onClose}>{t('Cancel')}</Button>
@@ -352,11 +383,17 @@ function ConnectDialog({ open, onClose, onConnect }: { open: boolean; onClose():
             label={t('Engine')}
             value={type}
             onChange={(v) => {
-              setType(v as 'mysql' | 'postgres');
-              setPort(v === 'postgres' ? '5432' : '3306');
-              setUser(v === 'postgres' ? 'postgres' : 'root');
+              const d = CONNECT_DEFAULTS[v as ConnectType];
+              setType(v as ConnectType);
+              setPort(d.port);
+              setUser(d.user);
             }}
-            options={[{ value: 'mysql', label: 'MySQL / MariaDB' }, { value: 'postgres', label: 'PostgreSQL' }]}
+            options={[
+              { value: 'mysql', label: 'MySQL / MariaDB' },
+              { value: 'postgres', label: 'PostgreSQL' },
+              { value: 'mongodb', label: 'MongoDB' },
+              { value: 'redis', label: 'Redis / Valkey / KeyDB' },
+            ]}
           />
         </div>
         <div className="db-row2">
@@ -364,7 +401,7 @@ function ConnectDialog({ open, onClose, onConnect }: { open: boolean; onClose():
           <Input label={t('Port')} value={port} onChange={(e) => setPort(e.target.value)} mono />
         </div>
         <div className="db-row2">
-          <Input label={t('Username')} value={user} onChange={(e) => setUser(e.target.value)} mono />
+          <Input label={t('Username')} value={user} onChange={(e) => setUser(e.target.value)} mono placeholder={type === 'mongodb' || type === 'redis' ? t('Optional') : undefined} />
           <Input type="password" label={t('Password')} value={pass} onChange={(e) => setPass(e.target.value)} />
         </div>
         <div className="db-note"><Icon name="key" /><span>{t('Credentials stay in memory for this session only; they are never saved.')}</span></div>

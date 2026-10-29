@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as RMouseEvent } from 'react';
 import {
-  browseCache, dbApi, invalidateInstance, invalidateTableData,
+  browseCache, dbApi, invalidateInstance, invalidateTableData, isNoSql,
   type BrowseDataResult, type BrowseParams, type ColFilter, type ColumnMeta, type DbInstance, type FilterOp,
 } from '../../api';
 import { gridKey, newGrid, patchGrid, useExplorer, type GridState } from '../../explorerState';
@@ -73,6 +73,7 @@ export function DataGrid({ inst, db, table }: { inst: DbInstance; db: string; ta
   const metaBy = useMemo(() => Object.fromEntries(meta.map((m) => [m.name, m])), [meta]);
   const pks = data?.primary_keys ?? [];
   const editable = pks.length > 0;
+  const nosql = isNoSql(inst.engine);
   const rows = data?.rows ?? [];
 
   /* ---------- quick search: live (debounced, from N chars) or Enter ---------- */
@@ -285,8 +286,11 @@ export function DataGrid({ inst, db, table }: { inst: DbInstance; db: string; ta
       { type: 'separator' },
       { id: 'copy', label: t('Copy value'), icon: 'copy', kbd: 'Ctrl+C', onSelect: () => void copy(cellText(row[col])) },
       { id: 'copyjson', label: t('Copy row as JSON'), icon: 'code', onSelect: () => void copy(JSON.stringify(row, null, 2), t('Row copied')) },
-      { id: 'copysql', label: t('Copy as INSERT'), icon: 'code', onSelect: () => void copy(toInsert(inst.engine, table, cols, targets.map((i) => rows[i])).trim(), t('Copied')) },
-      { id: 'where', label: t('Copy WHERE for this row'), icon: 'filter', disabled: !editable, onSelect: () => void copy(pks.map((k) => `${quoteIdent(inst.engine, k)} = ${sqlLiteral(row[k], inst.engine)}`).join(' AND ')) },
+      ...(nosql ? [] : [
+        { id: 'copysql', label: t('Copy as INSERT'), icon: 'code', onSelect: () => void copy(toInsert(inst.engine, table, cols, targets.map((i) => rows[i])).trim(), t('Copied')) },
+        { id: 'where', label: t('Copy WHERE for this row'), icon: 'filter', disabled: !editable, onSelect: () => void copy(pks.map((k) => `${quoteIdent(inst.engine, k)} = ${sqlLiteral(row[k], inst.engine)}`).join(' AND ')) },
+      ]),
+      ...(inst.engine === 'mongodb' ? [{ id: 'where', label: t('Copy filter for this document'), icon: 'filter', onSelect: () => void copy(JSON.stringify({ _id: row._id })) }] : []),
       { type: 'separator' },
       { id: 'filter', label: t('Filter by this value'), icon: 'filter', onSelect: () => addFilter(col, row[col]) },
       { id: 'dup', label: t('Duplicate row…'), icon: 'plus', onSelect: () => setRowDialog({ initial: row }) },
@@ -358,7 +362,7 @@ export function DataGrid({ inst, db, table }: { inst: DbInstance; db: string; ta
           {t('Column filters')}
         </Button>
         <Button size="sm" variant={gs.showWhere ? 'primary' : 'secondary'} icon="code" onClick={() => patch({ showWhere: !gs.showWhere })}>
-          WHERE
+          {inst.engine === 'mongodb' ? t('Filter') : inst.engine === 'redis' ? t('Key glob') : 'WHERE'}
         </Button>
         <span className="db-tb-sep" />
         {editable && selected.size > 0 && (
@@ -373,7 +377,7 @@ export function DataGrid({ inst, db, table }: { inst: DbInstance; db: string; ta
             { type: 'heading', label: selected.size ? t('Selected rows') : t('This page') },
             { id: 'csv', label: 'CSV', icon: 'download', onSelect: () => void exportRows('csv', selected.size ? [...selected].sort((a, b) => a - b).map((i) => rows[i]) : rows) },
             { id: 'json', label: 'JSON', icon: 'download', onSelect: () => void exportRows('json', selected.size ? [...selected].sort((a, b) => a - b).map((i) => rows[i]) : rows) },
-            { id: 'sql', label: 'SQL INSERT', icon: 'download', onSelect: () => void exportRows('sql', selected.size ? [...selected].sort((a, b) => a - b).map((i) => rows[i]) : rows) },
+            ...(nosql ? [] : [{ id: 'sql', label: 'SQL INSERT', icon: 'download', onSelect: () => void exportRows('sql', selected.size ? [...selected].sort((a, b) => a - b).map((i) => rows[i]) : rows) }]),
           ]}
           trigger={(p) => <Button size="sm" variant="secondary" icon="download" {...(p as any)}>{t('Export')}</Button>}
         />
@@ -387,7 +391,7 @@ export function DataGrid({ inst, db, table }: { inst: DbInstance; db: string; ta
             mono
             icon="code"
             value={gs.whereInput}
-            placeholder={t("Raw SQL condition, e.g. id > 10 AND status = 'active' (Enter)")}
+            placeholder={inst.engine === 'mongodb' ? t("JSON filter, e.g. { status: 'active', age: { $gt: 30 } } (Enter)") : inst.engine === 'redis' ? t('Key glob, e.g. session:*:2024* (Enter)') : t("Raw SQL condition, e.g. id > 10 AND status = 'active' (Enter)")}
             aria-label="WHERE"
             onChange={(e) => patch({ whereInput: e.target.value })}
             onKeyDown={(e) => { if (e.key === 'Enter') patch({ where: gs.whereInput.trim(), page: 1 }); }}

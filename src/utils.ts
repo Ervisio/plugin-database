@@ -1,5 +1,6 @@
 export function buildConnectionString(inst: {
   type: string;
+  engine?: string;
   host?: string;
   port?: number;
   user?: string;
@@ -7,11 +8,15 @@ export function buildConnectionString(inst: {
   path?: string;
 }): string {
   if (inst.type === 'sqlite') return `sqlite:///${inst.path || ''}`;
-  const scheme = inst.type === 'postgres' ? 'postgresql' : 'mysql';
-  const user = inst.user || (inst.type === 'postgres' ? 'postgres' : 'root');
-  const pass = inst.password ? `:${encodeURIComponent(inst.password)}` : '';
   const host = inst.host || '127.0.0.1';
   const port = inst.port ? `:${inst.port}` : '';
+  const pass = inst.password ? `:${encodeURIComponent(inst.password)}` : '';
+  if (inst.engine === 'mongodb' || inst.engine === 'redis') {
+    const auth = inst.user || inst.password ? `${encodeURIComponent(inst.user || '')}${pass}@` : '';
+    return inst.engine === 'mongodb' ? `mongodb://${auth}${host}${port}/` : `redis://${auth}${host}${port}/0`;
+  }
+  const scheme = inst.type === 'postgres' ? 'postgresql' : 'mysql';
+  const user = inst.user || (inst.type === 'postgres' ? 'postgres' : 'root');
   return `${scheme}://${user}${pass}@${host}${port}/`;
 }
 

@@ -37,7 +37,8 @@ export function CreateDbDialog({ inst, open, onClose }: { inst: DbInstance; open
       </>}
     >
       <div className="db-form">
-        <Input label={t('Name')} placeholder="my_project" value={name} autoFocus onChange={(e) => setName(e.target.value)} mono />
+        <Input label={t('Name')} placeholder={inst.engine === 'mongodb' ? 'my_project.users' : 'my_project'} value={name} autoFocus onChange={(e) => setName(e.target.value)} mono
+          hint={inst.engine === 'mongodb' ? t('MongoDB creates a database with its first collection: database or database.collection (default collection: data).') : undefined} />
       </div>
     </Dialog>
   );

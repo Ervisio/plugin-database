@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Ervisio Database Plugin Bridge (db-bridge.py)
-Provides unified HeidiSQL-style management for MySQL, MariaDB, PostgreSQL, and SQLite.
+Provides unified HeidiSQL-style management for MySQL, MariaDB, PostgreSQL, SQLite, MongoDB and Redis/Valkey.
 Communicates via JSON over stdout.
 """
 import sys
@@ -9,9 +9,12 @@ import os
 import json
 import base64
 import time
+import socket
+import shlex
+import fnmatch
 import subprocess
 import glob
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 import re
 
@@ -50,12 +53,12 @@ def send_json(data: Any, status: int = 0):
 def send_error(msg: str, code: str = "error"):
     send_json({"error": {"message": str(msg), "code": code}}, status=1)
 
-def run_cmd(cmd: List[str], timeout: int = 300) -> str:
+def run_cmd(cmd: List[str], timeout: int = 300, input: Optional[str] = None) -> str:
     try:
         extra: Dict[str, Any] = {}
         if IS_WINDOWS:
             extra["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, input=input,
                            encoding="utf-8", errors="replace", timeout=timeout, **extra)
         if p.returncode != 0:
             raise RuntimeError(p.stderr.strip() or f"Command failed with exit code {p.returncode}")
@@ -81,9 +84,9 @@ def tail_file(path: str, lines: int = 100) -> str:
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.$-]{1,80}$")
 
 def windows_database_services() -> List[Dict[str, str]]:
-    """MariaDB, MySQL and PostgreSQL services registered with the Windows service manager."""
+    """Database services registered with the Windows service manager."""
     script = (
-        "Get-Service | Where-Object { $_.Name -match '^(mariadb|mysql|postgresql)' } | "
+        "Get-Service | Where-Object { $_.Name -match '^(mariadb|mysql|postgresql|mongodb|redis|memurai|valkey)' } | "
         "Select-Object Name, @{n='State';e={$_.Status.ToString()}} | ConvertTo-Json -Compress"
     )
     out = run_cmd(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=60).strip()
@@ -193,6 +196,63 @@ def find_sqlite_windows(max_per_root: int = 15, max_depth: int = 4) -> List[Dict
                 break
     return found
 
+SYSTEMD_UNITS = [
+    (re.compile(r"^mariadb(@.*)?\.service$"), ("mariadb", "mysql", 3306, "MariaDB")),
+    (re.compile(r"^mysqld?(@.*)?\.service$"), ("mysql", "mysql", 3306, "MySQL")),
+    (re.compile(r"^postgresql(@.*)?\.service$"), ("postgres", "postgres", 5432, "PostgreSQL")),
+    (re.compile(r"^(mongod|mongodb)\.service$"), ("mongodb", "mongodb", 27017, "MongoDB")),
+    (re.compile(r"^redis(-server)?(@.*)?\.service$"), ("redis", "redis", 6379, "Redis")),
+    (re.compile(r"^valkey(-server)?(@.*)?\.service$"), ("valkey", "redis", 6379, "Valkey")),
+    (re.compile(r"^keydb(-server)?\.service$"), ("redis", "redis", 6379, "KeyDB")),
+]
+
+# Image name (last path segment, without tag) -> (type, engine, container port)
+DOCKER_IMAGES = {
+    "mariadb": ("mariadb", "mysql", 3306),
+    "mysql": ("mysql", "mysql", 3306),
+    "mysql-server": ("mysql", "mysql", 3306),
+    "postgres": ("postgres", "postgres", 5432),
+    "postgresql": ("postgres", "postgres", 5432),
+    "postgis": ("postgres", "postgres", 5432),
+    "mongo": ("mongodb", "mongodb", 27017),
+    "mongodb": ("mongodb", "mongodb", 27017),
+    "mongodb-community-server": ("mongodb", "mongodb", 27017),
+    "mongodb-enterprise-server": ("mongodb", "mongodb", 27017),
+    "redis": ("redis", "redis", 6379),
+    "redis-stack": ("redis", "redis", 6379),
+    "redis-stack-server": ("redis", "redis", 6379),
+    "keydb": ("redis", "redis", 6379),
+    "valkey": ("valkey", "redis", 6379),
+}
+
+def docker_engine(image: str) -> Optional[Tuple[str, str, int]]:
+    base = image.lower().split("@")[0].rsplit("/", 1)[-1].split(":")[0]
+    return DOCKER_IMAGES.get(base)
+
+PORT_MAP_RE = re.compile(r"(?:[\d.]+|\[[0-9a-f:]*\]|::)?:(\d+)->(\d+)/tcp")
+
+def docker_host_port(ports: str, container_port: int) -> int:
+    """Host port published for the engine port (0.0.0.0:13306->3306/tcp), else the first published one."""
+    maps = [(int(h), int(c)) for h, c in PORT_MAP_RE.findall(ports)]
+    for h, c in maps:
+        if c == container_port:
+            return h
+    return maps[0][0] if maps else container_port
+
+LOCAL_PORTS = {
+    3306: ("mysql", "mysql", "MySQL / MariaDB"),
+    5432: ("postgres", "postgres", "PostgreSQL"),
+    27017: ("mongodb", "mongodb", "MongoDB"),
+    6379: ("redis", "redis", "Redis"),
+}
+
+def port_open(host: str, port: int, timeout: float = 0.3) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
 def action_detect() -> Dict[str, Any]:
     instances = []
     
@@ -209,6 +269,12 @@ def action_detect() -> Dict[str, Any]:
                     db_type, engine, port, label = "mysql", "mysql", 3306, "MySQL"
                 elif low.startswith("postgresql"):
                     db_type, engine, port, label = "postgres", "postgres", 5432, "PostgreSQL"
+                elif low.startswith("mongodb"):
+                    db_type, engine, port, label = "mongodb", "mongodb", 27017, "MongoDB"
+                elif low.startswith(("redis", "memurai")):
+                    db_type, engine, port, label = "redis", "redis", 6379, "Memurai" if low.startswith("memurai") else "Redis"
+                elif low.startswith("valkey"):
+                    db_type, engine, port, label = "valkey", "redis", 6379, "Valkey"
                 else:
                     continue
                 if db_type in seen:
@@ -231,50 +297,35 @@ def action_detect() -> Dict[str, Any]:
     else:
         try:
             units_out = run_cmd(["systemctl", "list-units", "--type=service", "--state=all", "--no-pager", "--no-legend"])
+            seen = set()
             for line in units_out.splitlines():
-                parts = line.split()
+                parts = line.replace("●", " ").split()
                 if not parts:
                     continue
                 unit = parts[0]
-                if "mariadb" in unit:
-                    is_active = "running" in line
-                    instances.append({
-                        "id": "native-mariadb",
-                        "name": "MariaDB (Native Systemd)",
-                        "type": "mariadb",
-                        "engine": "mysql",
-                        "mode": "native",
-                        "host": "127.0.0.1",
-                        "port": 3306,
-                        "status": "running" if is_active else "stopped",
-                        "version": "native"
-                    })
-                elif "mysql" in unit and "native-mariadb" not in [x["id"] for x in instances]:
-                    is_active = "running" in line
-                    instances.append({
-                        "id": "native-mysql",
-                        "name": "MySQL (Native Systemd)",
-                        "type": "mysql",
-                        "engine": "mysql",
-                        "mode": "native",
-                        "host": "127.0.0.1",
-                        "port": 3306,
-                        "status": "running" if is_active else "stopped",
-                        "version": "native"
-                    })
-                elif "postgres" in unit:
-                    is_active = "running" in line
-                    instances.append({
-                        "id": "native-postgres",
-                        "name": "PostgreSQL (Native Systemd)",
-                        "type": "postgres",
-                        "engine": "postgres",
-                        "mode": "native",
-                        "host": "127.0.0.1",
-                        "port": 5432,
-                        "status": "running" if is_active else "stopped",
-                        "version": "native"
-                    })
+                hit = None
+                for pattern, spec in SYSTEMD_UNITS:
+                    if pattern.match(unit):
+                        hit = spec
+                        break
+                if not hit:
+                    continue
+                db_type, engine, port, label = hit
+                if db_type in seen or (db_type == "mysql" and "mariadb" in seen):
+                    continue
+                seen.add(db_type)
+                instances.append({
+                    "id": f"native-{db_type}",
+                    "name": f"{label} (Native Systemd)",
+                    "type": db_type,
+                    "engine": engine,
+                    "mode": "native",
+                    "service": unit,
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "status": "running" if "running" in line else "stopped",
+                    "version": "native"
+                })
         except Exception:
             pass
 
@@ -285,52 +336,44 @@ def action_detect() -> Dict[str, Any]:
             parts = line.split("|")
             if len(parts) >= 5:
                 cid, name, image, status, ports = parts[0], parts[1], parts[2], parts[3], parts[4]
-                img_lower = image.lower()
-                is_running = "Up" in status
-                
-                db_type = None
-                engine = None
-                default_port = 3306
-                
-                if "mariadb" in img_lower:
-                    db_type = "mariadb"
-                    engine = "mysql"
-                    default_port = 3306
-                elif "mysql" in img_lower:
-                    db_type = "mysql"
-                    engine = "mysql"
-                    default_port = 3306
-                elif "postgres" in img_lower:
-                    db_type = "postgres"
-                    engine = "postgres"
-                    default_port = 5432
-
-                if db_type:
-                    # Extract mapped port if available
-                    host_port = default_port
-                    if "->" in ports:
-                        try:
-                            # 0.0.0.0:3306->3306/tcp
-                            host_port = int(ports.split("->")[0].split(":")[-1])
-                        except Exception:
-                            pass
-
-                    instances.append({
-                        "id": f"docker-{cid[:12]}",
-                        "name": f"{name} ({image})",
-                        "container": name,
-                        "type": db_type,
-                        "engine": engine,
-                        "mode": "docker",
-                        "host": "127.0.0.1",
-                        "port": host_port,
-                        "status": "running" if is_running else "stopped",
-                        "version": image
-                    })
+                spec = docker_engine(image)
+                if not spec:
+                    continue
+                db_type, engine, default_port = spec
+                instances.append({
+                    "id": f"docker-{cid[:12]}",
+                    "name": f"{name} ({image})",
+                    "container": name,
+                    "type": db_type,
+                    "engine": engine,
+                    "mode": "docker",
+                    "host": "127.0.0.1",
+                    "port": docker_host_port(ports, default_port),
+                    "status": "running" if "Up" in status else "stopped",
+                    "version": image
+                })
     except Exception:
         pass
 
-    # 3. Known SQLite files (/home/ubuntu and /var/lib; the profile and ProgramData on Windows)
+    # 3. Engines listening on their default local port that neither the service manager nor Docker reported
+    #    (started by hand, portable builds, other service managers).
+    taken = {i.get("port") for i in instances if i.get("status") == "running"}
+    for port, (db_type, engine, label) in LOCAL_PORTS.items():
+        if port in taken or not port_open("127.0.0.1", port):
+            continue
+        instances.append({
+            "id": f"local-{db_type}-{port}",
+            "name": f"{label} (localhost:{port})",
+            "type": db_type,
+            "engine": engine,
+            "mode": "local",
+            "host": "127.0.0.1",
+            "port": port,
+            "status": "running",
+            "version": "local"
+        })
+
+    # 4. Known SQLite files (/home/ubuntu and /var/lib; the profile and ProgramData on Windows)
     sqlite_files = []
     if IS_WINDOWS:
         sqlite_files = find_sqlite_windows()
@@ -359,33 +402,54 @@ def action_detect() -> Dict[str, Any]:
             "mysql": ["8.4-lts", "8.0", "9.0", "5.7"],
             "mariadb": ["11.4-lts", "11.2", "10.11-lts", "10.6"],
             "postgres": ["17", "16", "15", "14"],
+            "mongodb": ["8.0", "7.0", "6.0"],
+            "redis": ["7.4", "7.2", "6.2"],
+            "valkey": ["8.1", "8.0", "7.2"],
             "sqlite": ["3.x (system)"]
         }
     }
 
-def action_install_docker(params: Dict[str, Any]) -> Dict[str, Any]:
-    engine = params.get("engine", "mysql") # mysql, mariadb, postgres
-    version = params.get("version", "8.4")
-    name = params.get("name", f"db-{engine}").strip()
-    root_password = params.get("password", "ErvisioSecret2026!").strip()
-    port = int(params.get("port", 3306 if engine in ("mysql", "mariadb") else 5432))
-    volume_name = f"{name}-data"
+DOCKER_SPECS: Dict[str, Dict[str, Any]] = {
+    "mysql": {"image": "mysql", "port": 3306, "data": "/var/lib/mysql", "env": ["MYSQL_ROOT_PASSWORD={pw}"]},
+    "mariadb": {"image": "mariadb", "port": 3306, "data": "/var/lib/mysql", "env": ["MYSQL_ROOT_PASSWORD={pw}"]},
+    "postgres": {"image": "postgres", "port": 5432, "data": "/var/lib/postgresql/data", "env": ["POSTGRES_PASSWORD={pw}"]},
+    "mongodb": {"image": "mongo", "port": 27017, "data": "/data/db",
+                "env": ["MONGO_INITDB_ROOT_USERNAME=root", "MONGO_INITDB_ROOT_PASSWORD={pw}"]},
+    "redis": {"image": "redis", "port": 6379, "data": "/data",
+              "cmd": ["redis-server", "--requirepass", "{pw}", "--appendonly", "yes"]},
+    "valkey": {"image": "valkey/valkey", "port": 6379, "data": "/data",
+               "cmd": ["valkey-server", "--requirepass", "{pw}", "--appendonly", "yes"]},
+}
+CONTAINER_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$")
+TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-    image_tag = f"{engine}:{version}"
+def action_install_docker(params: Dict[str, Any]) -> Dict[str, Any]:
+    engine = params.get("engine", "mysql")
+    spec = DOCKER_SPECS.get(engine)
+    if not spec:
+        raise RuntimeError(f"Unsupported engine: {engine}")
+    version = str(params.get("version", "latest")).strip()
+    name = str(params.get("name", f"db-{engine}")).strip()
+    password = str(params.get("password", "")).strip()
+    port = int(params.get("port") or spec["port"])
+    if not CONTAINER_RE.match(name):
+        raise RuntimeError(f"Invalid container name: {name!r}")
+    if not TAG_RE.match(version):
+        raise RuntimeError(f"Invalid version: {version!r}")
+    if not password:
+        raise RuntimeError("A password is required")
+
     cmd = [
         "docker", "run", "-d",
         "--name", name,
         "--restart", "unless-stopped",
-        "-p", f"127.0.0.1:{port}:{3306 if engine in ('mysql', 'mariadb') else 5432}",
-        "-v", f"{volume_name}:/var/lib/{'mysql' if engine in ('mysql', 'mariadb') else 'postgresql/data'}",
+        "-p", f"127.0.0.1:{port}:{spec['port']}",
+        "-v", f"{name}-data:{spec['data']}",
     ]
-
-    if engine in ("mysql", "mariadb"):
-        cmd.extend(["-e", f"MYSQL_ROOT_PASSWORD={root_password}"])
-    elif engine == "postgres":
-        cmd.extend(["-e", f"POSTGRES_PASSWORD={root_password}"])
-
-    cmd.append(image_tag)
+    for e in spec.get("env", []):
+        cmd += ["-e", e.format(pw=password)]
+    cmd.append(f"{spec['image']}:{version}")
+    cmd += [a.format(pw=password) for a in spec.get("cmd", [])]
 
     cid = run_cmd(cmd).strip()
     return {"ok": True, "container_id": cid, "name": name, "port": port}
@@ -394,6 +458,8 @@ WINGET_IDS = {
     "mariadb": "MariaDB.Server",
     "mysql": "Oracle.MySQL",
     "postgres": "PostgreSQL.PostgreSQL.17",
+    "mongodb": "MongoDB.Server",
+    "redis": "Memurai.MemuraiDeveloper",
     "sqlite": "SQLite.SQLite",
 }
 
@@ -416,21 +482,58 @@ def action_install_winget(params: Dict[str, Any]) -> Dict[str, Any]:
 def action_install_apt(params: Dict[str, Any]) -> Dict[str, Any]:
     if IS_WINDOWS:
         return action_install_winget(params)
-    engine = params.get("engine", "mariadb") # mariadb, mysql, postgres, sqlite
+    engine = params.get("engine", "mariadb")
+    if engine == "mongodb":
+        return install_mongodb_apt()
     pkg_map = {
         "mariadb": "mariadb-server",
         "mysql": "mysql-server",
         "postgres": "postgresql",
+        "redis": "redis-server",
+        "valkey": "valkey-server",
         "sqlite": "sqlite3"
     }
-    pkg = pkg_map.get(engine, "mariadb-server")
+    services = {"mariadb": "mariadb", "mysql": "mysql", "postgres": "postgresql", "redis": "redis-server", "valkey": "valkey-server"}
+    pkg = pkg_map.get(engine)
+    if not pkg:
+        raise RuntimeError(f"Unsupported engine: {engine}")
     run_cmd(privileged(["apt-get", "update"]), timeout=120)
     run_cmd(privileged(["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", pkg]), timeout=300)
-    if engine in ("mariadb", "mysql"):
-        run_cmd(privileged(["systemctl", "enable", "--now", engine]))
-    elif engine == "postgres":
-        run_cmd(privileged(["systemctl", "enable", "--now", "postgresql"]))
+    if engine in services:
+        run_cmd(privileged(["systemctl", "enable", "--now", services[engine]]))
     return {"ok": True, "engine": engine, "package": pkg}
+
+MONGO_SERIES = "8.0"
+
+def install_mongodb_apt() -> Dict[str, Any]:
+    """MongoDB is not in the Debian/Ubuntu archives: adds the official repo.mongodb.org repository, then installs mongodb-org."""
+    import urllib.request
+    info: Dict[str, str] = {}
+    with open("/etc/os-release", encoding="utf-8") as fh:
+        for line in fh:
+            k, _, v = line.strip().partition("=")
+            info[k] = v.strip('"')
+    distro = info.get("ID", "")
+    codename = info.get("VERSION_CODENAME") or info.get("UBUNTU_CODENAME", "")
+    if distro not in ("ubuntu", "debian") or not re.match(r"^[a-z]+$", codename):
+        raise RuntimeError("Native MongoDB needs Ubuntu or Debian; deploy it with Docker instead")
+    keyring = f"/usr/share/keyrings/mongodb-server-{MONGO_SERIES}.gpg"
+    component = "multiverse" if distro == "ubuntu" else "main"
+    repo = (f"deb [ arch=amd64,arm64 signed-by={keyring} ] https://repo.mongodb.org/apt/{distro} "
+            f"{codename}/mongodb-org/{MONGO_SERIES} {component}\n")
+    with urllib.request.urlopen(f"https://pgp.mongodb.com/server-{MONGO_SERIES}.asc", timeout=30) as resp:
+        key = resp.read().decode("ascii")
+    run_cmd(privileged(["apt-get", "update"]), timeout=120)
+    run_cmd(privileged(["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "gnupg"]), timeout=300)
+    run_cmd(privileged(["gpg", "--batch", "--yes", "--dearmor", "-o", keyring]), input=key)
+    run_cmd(privileged(["tee", f"/etc/apt/sources.list.d/mongodb-org-{MONGO_SERIES}.list"]), input=repo)
+    try:
+        run_cmd(privileged(["apt-get", "update"]), timeout=120)
+    except RuntimeError as e:
+        raise RuntimeError(f"MongoDB {MONGO_SERIES} has no packages for {distro} {codename}: {e}")
+    run_cmd(privileged(["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "mongodb-org"]), timeout=600)
+    run_cmd(privileged(["systemctl", "enable", "--now", "mongod"]))
+    return {"ok": True, "engine": "mongodb", "package": "mongodb-org"}
 
 def action_create_sqlite(params: Dict[str, Any]) -> Dict[str, Any]:
     path = params.get("path", "").strip()
@@ -477,7 +580,10 @@ def action_manage_instance(params: Dict[str, Any]) -> Dict[str, Any]:
                 pass  # already stopped
             run_cmd(["net.exe", "start", target], timeout=180)
     elif mode == "native":
-        svc = "mariadb" if "mariadb" in target else ("mysql" if "mysql" in target else "postgresql")
+        if SERVICE_RE.match(target or "") and target.endswith(".service"):
+            svc = target
+        else:
+            svc = "mariadb" if "mariadb" in target else ("mysql" if "mysql" in target else "postgresql")
         if op in ("start", "stop", "restart"):
             run_cmd(privileged(["systemctl", op, svc]))
     return {"ok": True, "op": op, "target": target}
@@ -1279,6 +1385,1060 @@ def action_toggle_log(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[
             conn.close()
     return {"ok": True, "enabled": enable, "threshold": threshold}
 
+# ---------------------------------------------------------------------------
+# Docker credentials: a detected container carries no password; read the one it was started with.
+# ---------------------------------------------------------------------------
+
+def fill_docker_credentials(instance: Dict[str, Any]) -> None:
+    if instance.get("mode") != "docker" or instance.get("password") or not instance.get("container"):
+        return
+    try:
+        cfg = json.loads(run_cmd(["docker", "inspect", "--format", "{{json .Config}}", instance["container"]], timeout=20))
+    except Exception:
+        return
+    env = dict(e.split("=", 1) for e in (cfg.get("Env") or []) if "=" in e)
+    engine = instance.get("engine")
+    user = None
+    pw = None
+    if engine == "mysql":
+        pw = env.get("MYSQL_ROOT_PASSWORD") or env.get("MARIADB_ROOT_PASSWORD")
+        user = "root"
+    elif engine == "postgres":
+        pw = env.get("POSTGRES_PASSWORD")
+        user = env.get("POSTGRES_USER") or "postgres"
+    elif engine == "mongodb":
+        pw = env.get("MONGO_INITDB_ROOT_PASSWORD")
+        user = env.get("MONGO_INITDB_ROOT_USERNAME")
+    elif engine == "redis":
+        args = list(cfg.get("Entrypoint") or []) + list(cfg.get("Cmd") or [])
+        for i, a in enumerate(args):
+            if a == "--requirepass" and i + 1 < len(args):
+                pw = args[i + 1]
+        pw = pw or env.get("REDIS_PASSWORD") or env.get("VALKEY_PASSWORD")
+    if pw:
+        instance["password"] = pw
+    if user and not instance.get("user"):
+        instance["user"] = user
+
+# ---------------------------------------------------------------------------
+# MongoDB: databases -> databases, collections -> tables, documents -> rows (top-level fields as columns).
+# Values travel as relaxed Extended JSON ({"$oid": ...}, {"$date": ...}) so ObjectId and dates round-trip.
+# ---------------------------------------------------------------------------
+
+MONGO_DB_RE = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
+MONGO_COLL_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}$")
+MONGO_SYSTEM_DBS = ("admin", "local", "config")
+
+def _bson():
+    try:
+        from bson import json_util
+        return json_util
+    except ImportError:
+        raise RuntimeError("The Python package 'pymongo' is missing: pip install pymongo")
+
+def get_mongo_client(instance: Dict[str, Any]):
+    try:
+        import pymongo
+    except ImportError:
+        raise RuntimeError("The Python package 'pymongo' is missing: pip install pymongo")
+    if instance.get("uri"):
+        return pymongo.MongoClient(instance["uri"], serverSelectionTimeoutMS=5000)
+    kw: Dict[str, Any] = {
+        "host": instance.get("host") or "127.0.0.1",
+        "port": int(instance.get("port") or 27017),
+        "serverSelectionTimeoutMS": 5000,
+        "connectTimeoutMS": 5000,
+        "directConnection": True,
+    }
+    if instance.get("user"):
+        kw["username"] = instance["user"]
+        kw["password"] = instance.get("password", "")
+        kw["authSource"] = instance.get("auth_db") or "admin"
+    return pymongo.MongoClient(**kw)
+
+def _check_mongo_db(name: str) -> str:
+    if not name or not MONGO_DB_RE.match(name):
+        raise RuntimeError(f"Invalid database name: {name!r}")
+    return name
+
+def _check_mongo_coll(name: str) -> str:
+    if not name or not MONGO_COLL_RE.match(name):
+        raise RuntimeError(f"Invalid collection name: {name!r}")
+    return name
+
+def mdoc(value: Any) -> Any:
+    """BSON value -> plain JSON value (relaxed Extended JSON)."""
+    ju = _bson()
+    return json.loads(ju.dumps(value, json_options=ju.RELAXED_JSON_OPTIONS))
+
+def mparse(value: Any) -> Any:
+    """Plain JSON value (Extended JSON allowed) -> BSON value."""
+    ju = _bson()
+    return ju.loads(json.dumps(value))
+
+def btype(v: Any) -> str:
+    from bson import ObjectId, Decimal128, Binary
+    import datetime
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "bool"
+    if isinstance(v, int):
+        return "int" if -2**31 <= v < 2**31 else "long"
+    if isinstance(v, float):
+        return "double"
+    if isinstance(v, str):
+        return "string"
+    if isinstance(v, dict):
+        return "object"
+    if isinstance(v, list):
+        return "array"
+    if isinstance(v, ObjectId):
+        return "objectId"
+    if isinstance(v, datetime.datetime):
+        return "date"
+    if isinstance(v, Decimal128):
+        return "decimal"
+    if isinstance(v, (bytes, Binary)):
+        return "binData"
+    return type(v).__name__
+
+_SHELL_WRAP = {"ObjectId": "$oid", "ISODate": "$date", "Date": "$date", "NumberLong": "$numberLong",
+               "NumberInt": "$numberInt", "NumberDecimal": "$numberDecimal", "UUID": "$uuid"}
+
+def shell_to_json(src: str) -> str:
+    """mongosh literal syntax -> JSON: unquoted keys, 'single quotes', ObjectId("..."), ISODate("..."), trailing commas."""
+    out: List[str] = []
+    i, n = 0, len(src)
+    while i < n:
+        ch = src[i]
+        if ch in "\"'":
+            j = i + 1
+            buf: List[str] = []
+            while j < n and src[j] != ch:
+                if src[j] == "\\" and j + 1 < n:
+                    nxt = src[j + 1]
+                    buf.append(nxt if (ch == "'" and nxt == "'") else src[j:j + 2])
+                    j += 2
+                    continue
+                buf.append('\\"' if (ch == "'" and src[j] == '"') else src[j])
+                j += 1
+            out.append('"' + "".join(buf) + '"')
+            i = j + 1
+            continue
+        if ch.isalpha() or ch in "_$":
+            j = i
+            while j < n and (src[j].isalnum() or src[j] in "_$."):
+                j += 1
+            word = src[i:j]
+            k = j
+            while k < n and src[k].isspace():
+                k += 1
+            if word == "new":
+                i = k
+                continue
+            if word in _SHELL_WRAP and k < n and src[k] == "(":
+                e = src.find(")", k)
+                if e < 0:
+                    raise RuntimeError(f"Unclosed {word}(")
+                inner = src[k + 1:e].strip().strip("\"'")
+                if _SHELL_WRAP[word] == "$date":
+                    if not inner:
+                        inner = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    elif "T" not in inner:
+                        inner += "T00:00:00Z"
+                out.append(json.dumps({_SHELL_WRAP[word]: inner}))
+                i = e + 1
+                continue
+            if k < n and src[k] == ":":
+                out.append(json.dumps(word))
+            else:
+                out.append(word)
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+def shell_args(text: str) -> List[Any]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    try:
+        return _bson().loads("[" + shell_to_json(text) + "]")
+    except Exception as e:
+        raise RuntimeError(f"Cannot parse arguments ({e}): {text[:200]}")
+
+def _split_chain(s: str) -> List[Tuple[str, Optional[str]]]:
+    """db.users.find({...}).sort({...}).limit(5) -> [('db', None), ('users', None), ('find', '{...}'), ...]"""
+    parts: List[Tuple[str, Optional[str]]] = []
+    i, n = 0, len(s)
+    while i < n:
+        j = i
+        while j < n and s[j] not in ".(":
+            j += 1
+        name = s[i:j].strip()
+        if j < n and s[j] == "(":
+            depth, k, quote = 0, j, None
+            while k < n:
+                c = s[k]
+                if quote:
+                    if c == "\\":
+                        k += 2
+                        continue
+                    if c == quote:
+                        quote = None
+                elif c in "\"'":
+                    quote = c
+                elif c in "([{":
+                    depth += 1
+                elif c in ")]}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k += 1
+            if depth:
+                raise RuntimeError("Unbalanced parentheses")
+            parts.append((name, s[j + 1:k]))
+            i = k + 1
+            while i < n and s[i].isspace():
+                i += 1
+            if i < n:
+                if s[i] != ".":
+                    raise RuntimeError(f"Unexpected {s[i]!r} after {name}()")
+                i += 1
+        else:
+            parts.append((name, None))
+            i = j + 1
+    return parts
+
+def _docs_result(docs: List[Any]) -> Tuple[List[str], List[Dict[str, Any]]]:
+    rows = [mdoc(d) if isinstance(d, dict) else {"value": mdoc(d)} for d in docs]
+    cols: List[str] = []
+    for r in rows:
+        for k in r:
+            if k not in cols:
+                cols.append(k)
+    return cols, rows
+
+def mongo_run_statement(client, db_name: str, stmt: str) -> Dict[str, Any]:
+    """One mongosh-style statement. Returns {columns, rows, affected}."""
+    stmt = stmt.strip().rstrip(";").strip()
+    low = stmt.lower()
+    if low in ("show dbs", "show databases"):
+        cols, rows = _docs_result([{"name": d["name"], "sizeOnDisk": d.get("sizeOnDisk")} for d in client.list_databases()])
+        return {"columns": cols, "rows": rows, "affected": 0}
+    if low in ("show collections", "show tables"):
+        return {"columns": ["name"], "rows": [{"name": c} for c in sorted(client[db_name].list_collection_names())], "affected": 0}
+    if stmt.startswith("{"):
+        args = shell_args(stmt)
+        res = client[db_name or "admin"].command(args[0])
+        cols, rows = _docs_result([res])
+        return {"columns": cols, "rows": rows, "affected": 0}
+
+    chain = _split_chain(stmt)
+    if not chain or chain[0] != ("db", None):
+        raise RuntimeError("Write a mongosh command such as db.users.find({ age: { $gt: 30 } }), or a JSON command document")
+    if not db_name:
+        raise RuntimeError("Pick a database first")
+    db = client[db_name]
+    rest = chain[1:]
+    names: List[str] = []
+    while rest and rest[0][1] is None:
+        names.append(rest.pop(0)[0])
+    if not rest:
+        raise RuntimeError("Missing method call, e.g. .find()")
+    method, raw = rest.pop(0)
+    args = shell_args(raw or "")
+
+    if not names:
+        if method == "getCollection":
+            names = [str(args[0])]
+            if not rest:
+                raise RuntimeError("Missing method call after getCollection()")
+            method, raw = rest.pop(0)
+            args = shell_args(raw or "")
+        else:
+            if method in ("runCommand", "adminCommand"):
+                target = client.admin if method == "adminCommand" else db
+                cmd = args[0] if args else {}
+                res = target.command(cmd if not isinstance(cmd, str) else {cmd: 1})
+            elif method == "getCollectionNames":
+                return {"columns": ["name"], "rows": [{"name": c} for c in sorted(db.list_collection_names())], "affected": 0}
+            elif method == "stats":
+                res = db.command("dbStats")
+            elif method == "createCollection":
+                db.create_collection(_check_mongo_coll(str(args[0])), **(args[1] if len(args) > 1 else {}))
+                return {"columns": [], "rows": [], "affected": 1}
+            elif method == "dropDatabase":
+                if db_name in MONGO_SYSTEM_DBS:
+                    raise RuntimeError(f"Cannot drop system database: {db_name}")
+                client.drop_database(db_name)
+                return {"columns": [], "rows": [], "affected": 1}
+            else:
+                raise RuntimeError(f"Unsupported database method: db.{method}()")
+            cols, rows = _docs_result([res])
+            return {"columns": cols, "rows": rows, "affected": 0}
+
+    coll = db[".".join(names)]
+    a = lambda i, default=None: args[i] if len(args) > i else default
+    if method in ("find", "findOne"):
+        cur = coll.find(a(0, {}), a(1))
+        limit = 1 if method == "findOne" else 1001
+        for mod, mraw in rest:
+            margs = shell_args(mraw or "")
+            if mod == "sort":
+                spec = margs[0] if margs else {}
+                cur = cur.sort(list(spec.items()))
+            elif mod == "limit":
+                limit = min(int(margs[0]), 1001) if margs and int(margs[0]) > 0 else limit
+            elif mod == "skip":
+                cur = cur.skip(int(margs[0]))
+            elif mod == "projection":
+                cur = coll.find(a(0, {}), margs[0])
+            elif mod in ("toArray", "pretty"):
+                pass
+            elif mod in ("count", "itcount", "size"):
+                return {"columns": ["count"], "rows": [{"count": coll.count_documents(a(0, {}))}], "affected": 0}
+            else:
+                raise RuntimeError(f"Unsupported cursor method: .{mod}()")
+        cols, rows = _docs_result(list(cur.limit(limit)))
+        return {"columns": cols, "rows": rows, "affected": 0}
+    if method == "aggregate":
+        pipeline = a(0, [])
+        cols, rows = _docs_result(list(coll.aggregate(pipeline if isinstance(pipeline, list) else args)))
+        return {"columns": cols, "rows": rows[:1001], "affected": 0}
+    if method in ("countDocuments", "count"):
+        return {"columns": ["count"], "rows": [{"count": coll.count_documents(a(0, {}))}], "affected": 0}
+    if method == "estimatedDocumentCount":
+        return {"columns": ["count"], "rows": [{"count": coll.estimated_document_count()}], "affected": 0}
+    if method == "distinct":
+        vals = coll.distinct(a(0), a(1, {}))
+        return {"columns": ["value"], "rows": [{"value": mdoc(v)} for v in vals], "affected": 0}
+    if method == "insertOne":
+        res = coll.insert_one(a(0, {}))
+        return {"columns": ["insertedId"], "rows": [{"insertedId": mdoc(res.inserted_id)}], "affected": 1}
+    if method == "insertMany":
+        res = coll.insert_many(a(0, []))
+        return {"columns": ["insertedId"], "rows": [{"insertedId": mdoc(x)} for x in res.inserted_ids], "affected": len(res.inserted_ids)}
+    if method in ("updateOne", "updateMany", "replaceOne"):
+        fn = {"updateOne": coll.update_one, "updateMany": coll.update_many, "replaceOne": coll.replace_one}[method]
+        opts = a(2, {}) or {}
+        res = fn(a(0, {}), a(1, {}), upsert=bool(opts.get("upsert")))
+        return {"columns": [], "rows": [], "affected": res.modified_count + (1 if res.upserted_id is not None else 0)}
+    if method in ("deleteOne", "deleteMany"):
+        res = (coll.delete_one if method == "deleteOne" else coll.delete_many)(a(0, {}))
+        return {"columns": [], "rows": [], "affected": res.deleted_count}
+    if method == "drop":
+        coll.drop()
+        return {"columns": [], "rows": [], "affected": 1}
+    if method == "createIndex":
+        name = coll.create_index(list((a(0) or {}).items()), **(a(1, {}) or {}))
+        return {"columns": ["index"], "rows": [{"index": name}], "affected": 0}
+    if method == "dropIndex":
+        coll.drop_index(a(0))
+        return {"columns": [], "rows": [], "affected": 0}
+    if method == "getIndexes":
+        cols, rows = _docs_result(list(coll.list_indexes()))
+        return {"columns": cols, "rows": rows, "affected": 0}
+    if method == "stats":
+        cols, rows = _docs_result([db.command("collStats", coll.name)])
+        return {"columns": cols, "rows": rows, "affected": 0}
+    raise RuntimeError(f"Unsupported collection method: .{method}()")
+
+def _mongo_sample_fields(coll, limit: int = 300) -> Tuple[List[str], Dict[str, Dict[str, int]], int]:
+    """Field names (in first-seen order, _id first), type counts per field and how many documents were sampled."""
+    order: List[str] = ["_id"]
+    types: Dict[str, Dict[str, int]] = {"_id": {}}
+    seen = 0
+    for doc in coll.find({}, limit=limit):
+        seen += 1
+        for k, v in doc.items():
+            if k not in types:
+                types[k] = {}
+                order.append(k)
+            t = btype(v)
+            types[k][t] = types[k].get(t, 0) + 1
+    return order, types, seen
+
+def _main_type(counts: Dict[str, int]) -> str:
+    real = {k: v for k, v in counts.items() if k != "null"}
+    return max(real, key=real.get) if real else ("null" if counts else "mixed")
+
+def _coerce(text: Any, like: Any = None) -> Any:
+    """A grid value (text) -> BSON value. Keeps strings for string fields, parses JSON/numbers/booleans otherwise."""
+    if text is None or not isinstance(text, str):
+        return text
+    if isinstance(like, str):
+        return text
+    s = text.strip()
+    if like is None and not re.match(r'^(-?\d+(\.\d+)?([eE][-+]?\d+)?|true|false|null|[{\["].*)$', s, re.S):
+        return text
+    try:
+        return _bson().loads(s)
+    except Exception:
+        try:
+            return _bson().loads(shell_to_json(s))
+        except Exception:
+            return text
+
+def _mongo_filter(params: Dict[str, Any], fields: List[str], types: Dict[str, Dict[str, int]]) -> Dict[str, Any]:
+    clauses: List[Dict[str, Any]] = []
+    search = str(params.get("search") or "").strip()
+    if search:
+        rx = {"$regex": re.escape(search), "$options": "i"}
+        ors: List[Dict[str, Any]] = [{f: rx} for f in fields if "string" in types.get(f, {})]
+        if re.match(r"^[0-9a-fA-F]{24}$", search):
+            from bson import ObjectId
+            ors.append({"_id": ObjectId(search)})
+        clauses.append({"$or": ors} if ors else {"_id": None})
+    for f in params.get("col_filters") or []:
+        col, op, val = f.get("col"), f.get("op"), f.get("value", "")
+        if not col or col.startswith("$"):
+            continue
+        typed = _coerce(val)
+        if col == "_id" and isinstance(val, str) and re.match(r"^[0-9a-fA-F]{24}$", val.strip()):
+            from bson import ObjectId
+            typed = ObjectId(val.strip())
+        if op == "eq":
+            clauses.append({col: {"$in": [typed, val]} if typed != val else val})
+        elif op == "ne":
+            clauses.append({col: {"$nin": [typed, val]} if typed != val else {"$ne": val}})
+        elif op in ("gt", "lt", "gte", "lte"):
+            clauses.append({col: {f"${op}": typed}})
+        elif op in ("contains", "starts", "ends"):
+            pat = re.escape(str(val))
+            pat = pat if op == "contains" else ("^" + pat if op == "starts" else pat + "$")
+            clauses.append({col: {"$regex": pat, "$options": "i"}})
+        elif op == "null":
+            clauses.append({col: None})
+        elif op == "notnull":
+            clauses.append({col: {"$ne": None}})
+    raw = str(params.get("filter") or "").strip()
+    if raw:
+        parsed = shell_args(raw)
+        if not parsed or not isinstance(parsed[0], dict):
+            raise RuntimeError("The filter must be a JSON object, e.g. { status: 'active', age: { $gt: 30 } }")
+        clauses.append(parsed[0])
+    if not clauses:
+        return {}
+    return clauses[0] if len(clauses) == 1 else {"$and": clauses}
+
+def _mongo_id(pks: Dict[str, Any]) -> Any:
+    if "_id" not in pks:
+        raise RuntimeError("_id is required to identify the document")
+    return mparse(pks["_id"])
+
+class MongoDriver:
+    def __init__(self, instance: Dict[str, Any]):
+        self.client = get_mongo_client(instance)
+
+    def close(self):
+        self.client.close()
+
+    def list_databases(self, params):
+        dbs = []
+        for d in self.client.list_databases():
+            name = d["name"]
+            try:
+                count = len(self.client[name].list_collection_names())
+            except Exception:
+                count = None
+            dbs.append({"name": name, "size_bytes": d.get("sizeOnDisk"), "tables_count": count})
+        return {"databases": sorted(dbs, key=lambda x: x["name"])}
+
+    def create_database(self, params):
+        name = str(params.get("name", "")).strip()
+        db_name, _, coll = name.partition(".")
+        _check_mongo_db(db_name)
+        coll = _check_mongo_coll(coll or str(params.get("collection") or "data"))
+        if db_name in self.client.list_database_names():
+            raise RuntimeError(f"Database {db_name} already exists")
+        self.client[db_name].create_collection(coll)
+        return {"ok": True, "created": db_name}
+
+    def drop_database(self, params):
+        name = _check_mongo_db(str(params.get("name", "")).strip())
+        if name in MONGO_SYSTEM_DBS:
+            raise RuntimeError(f"Cannot drop system database: {name}")
+        self.client.drop_database(name)
+        return {"ok": True, "dropped": name}
+
+    def list_tables(self, params):
+        db = self.client[_check_mongo_db(params.get("database") or "")]
+        tables = []
+        for c in db.list_collections():
+            kind = c.get("type", "collection")
+            name = c["name"]
+            entry = {"name": name, "type": "VIEW" if kind == "view" else kind, "engine": "MongoDB",
+                     "rows_count": None, "data_size": 0, "index_size": 0, "collation": "", "comment": ""}
+            if kind != "view":
+                try:
+                    st = db.command("collStats", name)
+                    entry.update(rows_count=st.get("count", 0), data_size=st.get("size", 0), index_size=st.get("totalIndexSize", 0))
+                except Exception:
+                    try:
+                        entry["rows_count"] = db[name].estimated_document_count()
+                    except Exception:
+                        pass
+            tables.append(entry)
+        return {"tables": sorted(tables, key=lambda x: x["name"]), "database": params.get("database")}
+
+    def table_structure(self, params):
+        db = self.client[_check_mongo_db(params.get("database") or "")]
+        coll = db[_check_mongo_coll(params.get("table") or "")]
+        order, types, seen = _mongo_sample_fields(coll, 500)
+        indexed: Dict[str, str] = {}
+        indexes = []
+        create = []
+        for idx in coll.list_indexes():
+            keys = list(idx["key"].items())
+            unique = bool(idx.get("unique")) or idx["name"] == "_id_"
+            for f, _ in keys:
+                indexed.setdefault(f, "UNI" if unique and len(keys) == 1 else "MUL")
+            indexes.append({"name": idx["name"], "column": ", ".join(f"{f} {'ASC' if d == 1 else 'DESC' if d == -1 else d}" for f, d in keys),
+                            "unique": unique, "seq": 1})
+            if idx["name"] != "_id_":
+                opts = {k: v for k, v in idx.items() if k not in ("v", "key", "ns")}
+                create.append(f"db.{coll.name}.createIndex({json.dumps(dict(keys))}, {json.dumps(mdoc(opts))});")
+        columns = []
+        for f in order:
+            counts = types.get(f, {})
+            present = sum(counts.values())
+            columns.append({
+                "name": f,
+                "type": " | ".join(sorted(counts, key=counts.get, reverse=True)) or "objectId",
+                "nullable": "NO" if f == "_id" or (present == seen and "null" not in counts) else "YES",
+                "key_type": "PRI" if f == "_id" else indexed.get(f, ""),
+                "default_val": None,
+                "extra": "auto (ObjectId)" if f == "_id" else "",
+                "comment": f"{round(100 * present / seen)}% of {seen} sampled documents" if seen else "",
+            })
+        info = next(iter(db.list_collections(filter={"name": coll.name})), {})
+        options = mdoc(info.get("options") or {})
+        create.insert(0, f"db.createCollection({json.dumps(coll.name)}, {json.dumps(options, indent=2)});")
+        return {"columns": columns, "indexes": indexes, "create_sql": "\n".join(create)}
+
+    def browse_data(self, params):
+        db = self.client[_check_mongo_db(params.get("database") or "")]
+        coll = db[_check_mongo_coll(params.get("table") or "")]
+        page = max(1, int(params.get("page", 1)))
+        per_page = max(1, min(1000, int(params.get("per_page", 50))))
+        order, types, _ = _mongo_sample_fields(coll)
+        flt = _mongo_filter(params, order, types)
+        total = coll.count_documents(flt)
+        cur = coll.find(flt)
+        sort_col = params.get("sort_col")
+        if sort_col:
+            cur = cur.sort(sort_col, -1 if str(params.get("sort_dir", "")).upper() == "DESC" else 1)
+        docs = list(cur.skip((page - 1) * per_page).limit(per_page))
+        for d in docs:
+            for k, v in d.items():
+                if k not in types:
+                    types[k] = {}
+                    order.append(k)
+                types[k][btype(v)] = types[k].get(btype(v), 0) + 1
+        rows = [mdoc(d) for d in docs]
+        meta = [{"name": f, "type": _main_type(types.get(f, {})), "pk": f == "_id", "nullable": f != "_id",
+                 "auto": f == "_id", "default": None} for f in order]
+        return {
+            "columns": order, "rows": rows, "total": total, "page": page, "per_page": per_page,
+            "total_pages": (total + per_page - 1) // per_page if total > 0 else 1,
+            "meta": meta, "primary_keys": ["_id"],
+        }
+
+    def save_row(self, params):
+        db = self.client[_check_mongo_db(params.get("database") or "")]
+        coll = db[_check_mongo_coll(params.get("table") or "")]
+        data = params.get("data") or {}
+        if any(k.startswith("$") for k in data):
+            raise RuntimeError("Field names cannot start with $")
+        if params.get("is_new"):
+            doc = {k: _coerce(v) for k, v in data.items()}
+            res = coll.insert_one(doc)
+            return {"ok": True, "affected": 1, "inserted_id": mdoc(res.inserted_id)}
+        if not data:
+            return {"ok": True, "affected": 0}
+        if "_id" in data:
+            raise RuntimeError("_id cannot be changed; duplicate the document instead")
+        doc_id = _mongo_id(params.get("pks") or {})
+        cur = coll.find_one({"_id": doc_id}) or {}
+        sets = {k: _coerce(v, cur.get(k)) for k, v in data.items()}
+        res = coll.update_one({"_id": doc_id}, {"$set": sets})
+        return {"ok": True, "affected": res.matched_count}
+
+    def delete_row(self, params):
+        db = self.client[_check_mongo_db(params.get("database") or "")]
+        coll = db[_check_mongo_coll(params.get("table") or "")]
+        pks_list = params.get("pks_list") or ([params["pks"]] if params.get("pks") else [])
+        if not pks_list:
+            raise RuntimeError("_id required to delete a document")
+        res = coll.delete_many({"_id": {"$in": [_mongo_id(p) for p in pks_list]}})
+        return {"ok": True, "affected": res.deleted_count}
+
+    def query(self, params):
+        db_name = params.get("database") or ""
+        if db_name:
+            _check_mongo_db(db_name)
+        statements = split_sql(params.get("sql", "") or "")
+        start = time.time()
+        out: Dict[str, Any] = {"columns": [], "rows": [], "affected": 0}
+        affected = 0
+        for idx, stmt in enumerate(statements):
+            try:
+                out = mongo_run_statement(self.client, db_name, stmt)
+            except Exception as e:
+                prefix = f"Statement {idx + 1} of {len(statements)}: " if len(statements) > 1 else ""
+                raise RuntimeError(f"{prefix}{e}")
+            affected += out.get("affected", 0)
+        rows = out["rows"]
+        return {"columns": out["columns"], "rows": rows[:1000], "affected": affected,
+                "time_ms": round((time.time() - start) * 1000, 2), "total_rows": len(rows),
+                "truncated": len(rows) > 1000, "statements": len(statements)}
+
+    def list_users(self, params):
+        res = self.client.admin.command({"usersInfo": {"forAllDBs": True}})
+        users = []
+        for u in res.get("users", []):
+            roles = ", ".join(f"{r['role']}@{r['db']}" for r in u.get("roles", []))
+            users.append({"user": u["user"], "host": u["db"], "privileges": roles or "—"})
+        return {"users": users}
+
+    def create_user(self, params):
+        user = str(params.get("user", "")).strip()
+        check_ident(user, "username")
+        password = str(params.get("password", ""))
+        if not password:
+            raise RuntimeError("A password is required")
+        grants = set(params.get("grants") or ["SELECT"])
+        database = params.get("database") or "*"
+        if database == "*":
+            role = "root" if "ALL PRIVILEGES" in grants else ("readWriteAnyDatabase" if grants - {"SELECT"} else "readAnyDatabase")
+            auth_db, roles = "admin", [{"role": role, "db": "admin"}]
+        else:
+            auth_db = _check_mongo_db(database)
+            role = "dbOwner" if "ALL PRIVILEGES" in grants else ("readWrite" if grants - {"SELECT"} else "read")
+            roles = [{"role": role, "db": auth_db}]
+        self.client[auth_db].command("createUser", user, pwd=password, roles=roles)
+        return {"ok": True, "user": f"{user}@{auth_db}"}
+
+    def drop_user(self, params):
+        user = str(params.get("user", ""))
+        check_ident(user, "username")
+        auth_db = params.get("host") or "admin"
+        if auth_db in ("%", "*"):
+            auth_db = "admin"
+        self.client[_check_mongo_db(auth_db)].command("dropUser", user)
+        return {"ok": True}
+
+    def get_logs(self, params):
+        db_name = params.get("database") or ""
+        status = {"slow_query_log": "OFF", "long_query_time": "0.1", "log_file": ""}
+        if not db_name:
+            return {"status": status, "content": "Pick a database: MongoDB profiles each database separately."}
+        db = self.client[_check_mongo_db(db_name)]
+        prof = db.command("profile", -1)
+        status["slow_query_log"] = "ON" if prof.get("was", 0) > 0 else "OFF"
+        status["long_query_time"] = str(prof.get("slowms", 100) / 1000)
+        status["log_file"] = f"{db_name}.system.profile"
+        lines = []
+        if "system.profile" in db.list_collection_names():
+            for e in db["system.profile"].find().sort("ts", -1).limit(100):
+                cmd = json.dumps(mdoc(e.get("command") or e.get("query") or {}))[:400]
+                ts = e.get("ts").isoformat() if e.get("ts") else ""
+                lines.append(f"{ts}  {e.get('op', '')}  {e.get('ns', '')}  {e.get('millis', 0)} ms  {cmd}")
+        return {"status": status, "content": "\n".join(lines)}
+
+    def toggle_log(self, params):
+        db_name = params.get("database") or ""
+        if not db_name:
+            raise RuntimeError("Pick a database: MongoDB profiles each database separately")
+        enable = bool(params.get("enable", True))
+        threshold = float(params.get("threshold", 0.1))
+        self.client[_check_mongo_db(db_name)].command("profile", 1 if enable else 0, slowms=max(0, int(threshold * 1000)))
+        return {"ok": True, "enabled": enable, "threshold": threshold}
+
+# ---------------------------------------------------------------------------
+# Redis / Valkey / KeyDB / Memurai: numbered databases (db0, db1, ...), "tables" are key patterns
+# (* and the most common prefixes), rows are keys with their type, TTL and value.
+# ---------------------------------------------------------------------------
+
+REDIS_SCAN_CAP = 10000
+REDIS_ITEMS_CAP = 500
+
+def get_redis(instance: Dict[str, Any], db: int = 0):
+    try:
+        import redis
+    except ImportError:
+        raise RuntimeError("The Python package 'redis' is missing: pip install redis")
+    return redis.Redis(
+        host=instance.get("host") or "127.0.0.1",
+        port=int(instance.get("port") or 6379),
+        username=instance.get("user") or None,
+        password=instance.get("password") or None,
+        db=db,
+        socket_timeout=10,
+        socket_connect_timeout=5,
+        decode_responses=True,
+        encoding_errors="replace",
+    )
+
+def _redis_db(name: Any) -> int:
+    m = re.match(r"^db(\d{1,3})$", str(name or "db0"))
+    if not m:
+        raise RuntimeError(f"Invalid Redis database: {name!r} (db0, db1, ...)")
+    return int(m.group(1))
+
+def _redis_pattern(table: Any) -> str:
+    p = str(table or "*")
+    if not p or len(p) > 512:
+        raise RuntimeError("Invalid key pattern")
+    return p
+
+def _glob_escape(s: str) -> str:
+    return re.sub(r"([*?\[\]\\])", r"\\\1", s)
+
+def _redis_value(r, key: str, kind: str) -> Any:
+    if kind == "string":
+        return r.get(key)
+    if kind == "hash":
+        out = {}
+        for k, v in r.hscan_iter(key, count=200):
+            out[k] = v
+            if len(out) >= REDIS_ITEMS_CAP:
+                break
+        return out
+    if kind == "list":
+        return r.lrange(key, 0, REDIS_ITEMS_CAP - 1)
+    if kind == "set":
+        out = []
+        for v in r.sscan_iter(key, count=200):
+            out.append(v)
+            if len(out) >= REDIS_ITEMS_CAP:
+                break
+        return sorted(out)
+    if kind == "zset":
+        return [[m, s] for m, s in r.zrange(key, 0, REDIS_ITEMS_CAP - 1, withscores=True)]
+    if kind == "stream":
+        return [{"id": i, **f} for i, f in r.xrevrange(key, count=50)]
+    if kind == "ReJSON-RL":
+        return r.execute_command("JSON.GET", key)
+    return None
+
+def _redis_write(pipe, key: str, kind: str, value: Any) -> None:
+    """Writes `value` as a whole new value of type `kind` (the key must already be deleted in the same transaction)."""
+    if kind == "string":
+        pipe.set(key, value if isinstance(value, str) else json.dumps(value))
+        return
+    data = json.loads(value) if isinstance(value, str) else value
+    if kind == "hash":
+        if not isinstance(data, dict) or not data:
+            raise RuntimeError('A hash value is a non-empty JSON object, e.g. {"field": "value"}')
+        pipe.hset(key, mapping={k: v if isinstance(v, str) else json.dumps(v) for k, v in data.items()})
+    elif kind in ("list", "set"):
+        if not isinstance(data, list) or not data:
+            raise RuntimeError(f'A {kind} value is a non-empty JSON array, e.g. ["a", "b"]')
+        items = [v if isinstance(v, str) else json.dumps(v) for v in data]
+        (pipe.rpush if kind == "list" else pipe.sadd)(key, *items)
+    elif kind == "zset":
+        pairs = data.items() if isinstance(data, dict) else data
+        mapping = {str(m): float(s) for m, s in pairs}
+        if not mapping:
+            raise RuntimeError('A zset value is a JSON array of [member, score] pairs or an object {"member": score}')
+        pipe.zadd(key, mapping)
+    else:
+        raise RuntimeError(f"Editing {kind} values is not supported here; use the Query tab")
+
+def _redis_reply(res: Any) -> Tuple[List[str], List[Dict[str, Any]]]:
+    if isinstance(res, dict):
+        return ["field", "value"], [{"field": k, "value": v} for k, v in res.items()]
+    if isinstance(res, (list, tuple, set)):
+        return ["#", "value"], [{"#": i + 1, "value": v} for i, v in enumerate(res)]
+    return ["result"], [{"result": res}]
+
+def _cmp(a: Any, op: str, b: str) -> bool:
+    if op in ("null", "notnull"):
+        return (a is None) == (op == "null")
+    if a is None:
+        return False
+    if isinstance(a, (int, float)):
+        try:
+            bv: Any = float(b)
+        except ValueError:
+            return False
+    else:
+        a, bv = str(a).lower(), b.lower()
+    return {
+        "eq": lambda: a == bv, "ne": lambda: a != bv, "gt": lambda: a > bv, "lt": lambda: a < bv,
+        "gte": lambda: a >= bv, "lte": lambda: a <= bv, "contains": lambda: bv in a,
+        "starts": lambda: a.startswith(bv), "ends": lambda: a.endswith(bv),
+    }.get(op, lambda: True)()
+
+class RedisDriver:
+    def __init__(self, instance: Dict[str, Any]):
+        self.instance = instance
+
+    def close(self):
+        pass
+
+    def conn(self, db_name: Any = "db0"):
+        return get_redis(self.instance, _redis_db(db_name))
+
+    def list_databases(self, params):
+        r = self.conn()
+        try:
+            count = int(r.config_get("databases").get("databases", 16))
+        except Exception:
+            count = 16
+        keyspace = r.info("keyspace")
+        dbs = []
+        for i in range(count):
+            ks = keyspace.get(f"db{i}")
+            if i == 0 or ks:
+                dbs.append({"name": f"db{i}", "tables_count": None, "size_bytes": None, "keys": (ks or {}).get("keys", 0)})
+        return {"databases": dbs}
+
+    def create_database(self, params):
+        raise RuntimeError("Redis has a fixed set of numbered databases (db0-db15 by default): open one with SELECT in the Query tab")
+
+    def drop_database(self, params):
+        self.conn(params.get("name")).flushdb()
+        return {"ok": True, "dropped": params.get("name")}
+
+    def list_tables(self, params):
+        r = self.conn(params.get("database"))
+        prefixes: Dict[str, int] = {}
+        scanned = 0
+        for key in r.scan_iter(count=1000):
+            scanned += 1
+            if ":" in key:
+                p = key.split(":", 1)[0]
+                prefixes[p] = prefixes.get(p, 0) + 1
+            if scanned >= 5000:
+                break
+        tables = [{"name": "*", "type": "keys", "engine": "Redis", "rows_count": r.dbsize(),
+                   "data_size": 0, "index_size": 0, "collation": "", "comment": "All keys"}]
+        for p, n in sorted(prefixes.items(), key=lambda x: (-x[1], x[0]))[:200]:
+            tables.append({"name": f"{_glob_escape(p)}:*", "type": "prefix", "engine": "Redis", "rows_count": n,
+                           "data_size": 0, "index_size": 0, "collation": "", "comment": f"Keys starting with {p}:"})
+        return {"tables": tables, "database": params.get("database")}
+
+    def table_structure(self, params):
+        r = self.conn(params.get("database"))
+        pattern = _redis_pattern(params.get("table"))
+        kinds: Dict[str, int] = {}
+        for i, key in enumerate(r.scan_iter(match=pattern, count=1000)):
+            k = r.type(key)
+            kinds[k] = kinds.get(k, 0) + 1
+            if i >= 500:
+                break
+        columns = [
+            {"name": "key", "type": "string", "nullable": "NO", "key_type": "PRI", "default_val": None, "extra": "", "comment": f"MATCH {pattern}"},
+            {"name": "type", "type": "string", "nullable": "NO", "key_type": "", "default_val": "string", "extra": "",
+             "comment": ", ".join(f"{k}: {n}" for k, n in sorted(kinds.items(), key=lambda x: -x[1]))},
+            {"name": "ttl", "type": "int (seconds)", "nullable": "YES", "key_type": "", "default_val": None, "extra": "", "comment": "NULL = no expiry"},
+            {"name": "value", "type": "string | JSON", "nullable": "NO", "key_type": "", "default_val": None, "extra": "",
+             "comment": "hash = object, list/set = array, zset = [member, score] pairs"},
+        ]
+        info = r.info("server")
+        ddl = f"# {info.get('server_name', 'redis')} {info.get('redis_version', '')} · SCAN 0 MATCH {pattern}"
+        return {"columns": columns, "indexes": [], "create_sql": ddl}
+
+    def browse_data(self, params):
+        r = self.conn(params.get("database"))
+        pattern = _redis_pattern(params.get("table"))
+        page = max(1, int(params.get("page", 1)))
+        per_page = max(1, min(1000, int(params.get("per_page", 50))))
+        search = str(params.get("search") or "").strip().lower()
+        raw = str(params.get("filter") or "").strip()
+
+        keys: List[str] = []
+        for key in r.scan_iter(match=pattern, count=1000):
+            if search and search not in key.lower():
+                continue
+            if raw and not fnmatch.fnmatchcase(key, raw):
+                continue
+            keys.append(key)
+            if len(keys) >= REDIS_SCAN_CAP:
+                break
+        pipe = r.pipeline(transaction=False)
+        for key in keys:
+            pipe.type(key)
+            pipe.ttl(key)
+        res = pipe.execute() if keys else []
+        rows = []
+        for i, key in enumerate(keys):
+            ttl = res[2 * i + 1]
+            rows.append({"key": key, "type": res[2 * i], "ttl": ttl if ttl is not None and ttl >= 0 else None})
+        for f in params.get("col_filters") or []:
+            col = f.get("col")
+            if col in ("key", "type", "ttl"):
+                rows = [x for x in rows if _cmp(x[col], f.get("op"), str(f.get("value", "")))]
+        sort_col = params.get("sort_col") if params.get("sort_col") in ("key", "type", "ttl") else "key"
+        desc = str(params.get("sort_dir", "")).upper() == "DESC"
+        rows.sort(key=lambda x: (x[sort_col] is None, x[sort_col] if x[sort_col] is not None else 0), reverse=desc)
+        total = len(rows)
+        rows = rows[(page - 1) * per_page: page * per_page]
+        for x in rows:
+            x["value"] = _redis_value(r, x["key"], x["type"])
+        meta = [
+            {"name": "key", "type": "string", "pk": True, "nullable": False, "auto": False, "default": None},
+            {"name": "type", "type": "string", "pk": False, "nullable": False, "auto": False, "default": "string"},
+            {"name": "ttl", "type": "int", "pk": False, "nullable": True, "auto": False, "default": None},
+            {"name": "value", "type": "string", "pk": False, "nullable": False, "auto": False, "default": None},
+        ]
+        return {"columns": ["key", "type", "ttl", "value"], "rows": rows, "total": total, "page": page,
+                "per_page": per_page, "total_pages": (total + per_page - 1) // per_page if total > 0 else 1,
+                "meta": meta, "primary_keys": ["key"]}
+
+    def save_row(self, params):
+        r = self.conn(params.get("database"))
+        data = params.get("data") or {}
+        if params.get("is_new"):
+            key = str(data.get("key") or "").strip()
+            if not key:
+                raise RuntimeError("key is required")
+            if r.exists(key):
+                raise RuntimeError(f"Key {key} already exists")
+            kind = str(data.get("type") or "string")
+            pipe = r.pipeline(transaction=True)
+            _redis_write(pipe, key, kind, data.get("value") if data.get("value") is not None else "")
+            if data.get("ttl") not in (None, ""):
+                pipe.expire(key, int(data["ttl"]))
+            pipe.execute()
+            return {"ok": True, "affected": 1}
+
+        key = str((params.get("pks") or {}).get("key") or "")
+        if not key or not r.exists(key):
+            return {"ok": True, "affected": 0}
+        if "type" in data:
+            raise RuntimeError("The type of an existing key cannot be changed; duplicate it with another type")
+        if "value" in data:
+            kind = r.type(key)
+            pttl = r.pttl(key)
+            pipe = r.pipeline(transaction=True)
+            pipe.delete(key)
+            _redis_write(pipe, key, kind, data["value"] if data["value"] is not None else "")
+            if pttl and pttl > 0:
+                pipe.pexpire(key, pttl)
+            pipe.execute()
+        if "ttl" in data:
+            ttl = data["ttl"]
+            if ttl in (None, "", "-1") or int(ttl) < 0:
+                r.persist(key)
+            else:
+                r.expire(key, int(ttl))
+        if "key" in data and data["key"] and data["key"] != key:
+            if not r.renamenx(key, str(data["key"])):
+                raise RuntimeError(f"Key {data['key']} already exists")
+        return {"ok": True, "affected": 1}
+
+    def delete_row(self, params):
+        r = self.conn(params.get("database"))
+        pks_list = params.get("pks_list") or ([params["pks"]] if params.get("pks") else [])
+        keys = [str(p.get("key")) for p in pks_list if p.get("key") is not None]
+        if not keys:
+            raise RuntimeError("key required to delete")
+        return {"ok": True, "affected": r.delete(*keys)}
+
+    def query(self, params):
+        r = self.conn(params.get("database") or "db0")
+        lines = [ln.strip() for chunk in split_sql(params.get("sql", "") or "") for ln in chunk.splitlines()]
+        lines = [ln for ln in lines if ln and not ln.startswith(("#", "//", "--"))]
+        start = time.time()
+        columns: List[str] = []
+        rows: List[Dict[str, Any]] = []
+        for idx, line in enumerate(lines):
+            try:
+                args = shlex.split(line, posix=True)
+                res = r.execute_command(*args)
+            except Exception as e:
+                prefix = f"Command {idx + 1} of {len(lines)}: " if len(lines) > 1 else ""
+                raise RuntimeError(f"{prefix}{e}")
+            columns, rows = _redis_reply(res)
+        return {"columns": columns, "rows": rows[:1000], "affected": 0, "time_ms": round((time.time() - start) * 1000, 2),
+                "total_rows": len(rows), "truncated": len(rows) > 1000, "statements": len(lines)}
+
+    def list_users(self, params):
+        users = []
+        for line in self.conn().execute_command("ACL", "LIST"):
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            rules = [p for p in parts[2:] if not p.startswith("#") and not p.startswith(">")]
+            users.append({"user": parts[1], "host": "*", "privileges": " ".join(rules)[:200]})
+        return {"users": users}
+
+    def create_user(self, params):
+        user = str(params.get("user", "")).strip()
+        check_ident(user, "username")
+        password = str(params.get("password", ""))
+        grants = set(params.get("grants") or ["SELECT"])
+        r = self.conn()
+        try:
+            exists = r.execute_command("ACL", "GETUSER", user)
+        except Exception:
+            exists = None
+        if exists:
+            raise RuntimeError(f"User {user} already exists")
+        if "ALL PRIVILEGES" in grants:
+            cmds = ["+@all"]
+        else:
+            cmds = ["+@connection"] + (["+@read"] if "SELECT" in grants else []) + (["+@write", "+@keyspace"] if grants - {"SELECT"} else [])
+        rules = ["on", f">{password}" if password else "nopass", "~*"] + cmds
+        r.execute_command("ACL", "SETUSER", user, *rules)
+        return {"ok": True, "user": user}
+
+    def drop_user(self, params):
+        user = str(params.get("user", ""))
+        if user == "default":
+            raise RuntimeError("Cannot drop the default user")
+        check_ident(user, "username")
+        self.conn().execute_command("ACL", "DELUSER", user)
+        return {"ok": True}
+
+    def get_logs(self, params):
+        r = self.conn()
+        cfg = r.config_get("slowlog-*")
+        slower = int(cfg.get("slowlog-log-slower-than", 10000))
+        status = {"slow_query_log": "ON" if slower >= 0 else "OFF",
+                  "long_query_time": str(max(slower, 0) / 1_000_000),
+                  "log_file": f"SLOWLOG (in memory, last {cfg.get('slowlog-max-len', '128')} entries)"}
+        lines = []
+        for e in r.slowlog_get(100):
+            cmd = e.get("command")
+            if isinstance(cmd, (list, tuple)):
+                cmd = " ".join(c.decode("utf-8", "replace") if isinstance(c, bytes) else str(c) for c in cmd)
+            elif isinstance(cmd, bytes):
+                cmd = cmd.decode("utf-8", "replace")
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(e.get("start_time", 0)))
+            lines.append(f"{ts}  {e.get('duration', 0) / 1000:.2f} ms  {str(cmd)[:400]}")
+        return {"status": status, "content": "\n".join(lines)}
+
+    def toggle_log(self, params):
+        enable = bool(params.get("enable", True))
+        threshold = float(params.get("threshold", 0.01))
+        self.conn().config_set("slowlog-log-slower-than", int(threshold * 1_000_000) if enable else -1)
+        return {"ok": True, "enabled": enable, "threshold": threshold}
+
+NOSQL_DRIVERS = {"mongodb": MongoDriver, "redis": RedisDriver}
+NOSQL_ACTIONS = {
+    "list-databases": "list_databases", "create-database": "create_database", "drop-database": "drop_database",
+    "list-tables": "list_tables", "table-structure": "table_structure", "browse-data": "browse_data",
+    "save-row": "save_row", "delete-row": "delete_row", "query": "query", "list-users": "list_users",
+    "create-user": "create_user", "drop-user": "drop_user", "get-logs": "get_logs", "toggle-log": "toggle_log",
+}
+
+def run_nosql(action: str, instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
+    method = NOSQL_ACTIONS.get(action)
+    if not method:
+        raise RuntimeError(f"Unknown action: {action}")
+    driver = NOSQL_DRIVERS[instance["engine"]](instance)
+    try:
+        return getattr(driver, method)(params)
+    finally:
+        driver.close()
+
 PAYLOAD_NAME_RE = re.compile(r"^[a-z0-9-]{8,64}$")
 PAYLOAD_SUBDIR = ".config/ervisio/plugins/database/tmp"
 
@@ -1339,6 +2499,10 @@ def main():
     instance = params.get("instance", {})
 
     try:
+        if isinstance(instance, dict) and instance:
+            fill_docker_credentials(instance)
+        if isinstance(instance, dict) and instance.get("engine") in NOSQL_DRIVERS and action in NOSQL_ACTIONS:
+            send_json(run_nosql(action, instance, params))
         if action == "detect":
             send_json(action_detect())
         elif action == "install-winget":
