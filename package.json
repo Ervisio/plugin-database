@@ -12,7 +12,9 @@
   "scripts": {
     "build": "tsc --noEmit && vite build && node scripts/pack.js",
     "pack": "node scripts/pack.js pack",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release": "node .github/release.mjs",
+    "marketplace": "node .github/release.mjs register"
   },
   "devDependencies": {
     "@ervisio/plugin-sdk": "github:Ervisio/plugin-sdk#v0.3.0",
