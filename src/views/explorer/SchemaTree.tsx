@@ -23,23 +23,23 @@ export function SchemaTree({ inst, filter }: { inst: DbInstance; filter: string 
   // First visit: open the first user database.
   useEffect(() => {
     if (st.db || !dbs.data?.length) return;
-    const first = dbs.data.find((d) => !isSystemDb(d.name)) ?? dbs.data[0];
+    const first = dbs.data.find((d) => !isSystemDb(d.name, inst.engine)) ?? dbs.data[0];
     patchExplorer(inst.id, (s) => ({ db: first.name, expanded: s.expanded.includes(first.name) ? s.expanded : [...s.expanded, first.name] }));
   }, [dbs.data, st.db, inst.id]);
 
   const q = filter.trim().toLowerCase();
-  const list = (dbs.data ?? []).filter((d) => settings.showSystemDbs || !isSystemDb(d.name) || d.name === st.db);
+  const list = (dbs.data ?? []).filter((d) => settings.showSystemDbs || !isSystemDb(d.name, inst.engine) || d.name === st.db);
+  const canCreate = inst.engine !== 'sqlite' && inst.engine !== 'redis';
 
   const dbMenu = (e: MouseEvent, name: string) => {
     e.preventDefault();
     const items: MenuItem[] = [
       { id: 'query', label: t('New query here'), icon: 'code', onSelect: () => patchExplorer(inst.id, (s) => ({ db: name, table: name === s.db ? s.table : '', tab: 'query' })) },
       { id: 'refresh', label: t('Refresh tables'), icon: 'refresh', onSelect: () => void tablesCache.get([inst, name], true).catch((er) => toast.err(t('List tables failed'), er.message)) },
-      { type: 'separator' },
-      { id: 'new', label: t('New database…'), icon: 'plus', onSelect: () => setCreateOpen(true) },
     ];
-    if (!isSystemDb(name) && inst.engine !== 'sqlite') {
-      items.push({ id: 'drop', label: t('Drop database…'), icon: 'trash', danger: true, onSelect: () => setDropDb(name) });
+    if (canCreate) items.push({ type: 'separator' }, { id: 'new', label: t('New database…'), icon: 'plus', onSelect: () => setCreateOpen(true) });
+    if (!isSystemDb(name, inst.engine) && inst.engine !== 'sqlite') {
+      items.push({ id: 'drop', label: inst.engine === 'redis' ? t('Flush database…') : t('Drop database…'), icon: 'trash', danger: true, onSelect: () => setDropDb(name) });
     }
     setMenu({ x: e.clientX, y: e.clientY, items });
   };
@@ -71,7 +71,7 @@ export function SchemaTree({ inst, filter }: { inst: DbInstance; filter: string 
         {t('Databases')}
         {dbs.data && <span style={{ fontWeight: 600 }}>{list.length}</span>}
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 2 }}>
-          {inst.engine !== 'sqlite' && <IconButton icon="plus" label={t('New database…')} size="sm" onClick={() => setCreateOpen(true)} />}
+          {canCreate && <IconButton icon="plus" label={t('New database…')} size="sm" onClick={() => setCreateOpen(true)} />}
           <IconButton icon="refresh" label={t('Refresh')} size="sm" loading={dbs.loading} onClick={refreshAll} />
         </span>
       </div>
@@ -111,9 +111,9 @@ export function SchemaTree({ inst, filter }: { inst: DbInstance; filter: string 
           }
           setDropDb(null);
         }}
-        title={t('Drop database?')}
-        description={dropDb ? t('"{db}" and all its tables will be permanently deleted.', { db: dropDb }) : ''}
-        confirmLabel={t('Drop database')}
+        title={inst.engine === 'redis' ? t('Flush database?') : t('Drop database?')}
+        description={dropDb ? (inst.engine === 'redis' ? t('Every key in "{db}" will be permanently deleted (FLUSHDB).', { db: dropDb }) : t('"{db}" and all its tables will be permanently deleted.', { db: dropDb })) : ''}
+        confirmLabel={inst.engine === 'redis' ? t('Flush database') : t('Drop database')}
         confirmText={dropDb || undefined}
         danger
         icon="trash"
@@ -137,7 +137,7 @@ function DbNode({ inst, name, count, filter, expanded, activeDb, activeTable, on
   const shown: TableInfo[] = (tables.data ?? []).filter((x) => nameHit || x.name.toLowerCase().includes(filter));
   if (filter && !nameHit && shown.length === 0) return null;
   const open = expanded || (!!filter && shown.length > 0 && !nameHit);
-  const sys = isSystemDb(name);
+  const sys = isSystemDb(name, inst.engine);
 
   return (
     <>

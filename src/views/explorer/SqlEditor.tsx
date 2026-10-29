@@ -52,7 +52,7 @@ export function statementRanges(text: string): { from: number; to: number; sql: 
   return out.filter((s) => s.sql && !/^(--[^\n]*\n?|\/\*[\s\S]*?\*\/|\s)*$/.test(s.sql));
 }
 
-export function SqlEditor({ value, onChange, engine, schema, defaultTable, onRun, onRunAll, apiRef, placeholder }: {
+export function SqlEditor({ value, onChange, engine, schema, defaultTable, onRun, onRunAll, apiRef, placeholder, lineMode }: {
   value: string;
   onChange(v: string): void;
   engine: string;
@@ -62,12 +62,14 @@ export function SqlEditor({ value, onChange, engine, schema, defaultTable, onRun
   onRunAll(): void;
   apiRef?: { current: SqlEditorApi | null };
   placeholder?: string;
+  /** "Run" takes the line under the cursor instead of the ;-separated statement (Redis). */
+  lineMode?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const lang = useRef(new Compartment());
-  const cb = useRef({ onChange, onRun, onRunAll });
-  cb.current = { onChange, onRun, onRunAll };
+  const cb = useRef({ onChange, onRun, onRunAll, lineMode });
+  cb.current = { onChange, onRun, onRunAll, lineMode };
 
   const langExt = () => sql({
     dialect: engine === 'postgres' ? PostgreSQL : engine === 'sqlite' ? SQLite : MySQL,
@@ -107,6 +109,7 @@ export function SqlEditor({ value, onChange, engine, schema, defaultTable, onRun
           const sel = v.state.selection.main;
           const text = v.state.doc.toString();
           if (!sel.empty) return text.slice(sel.from, sel.to);
+          if (cb.current.lineMode) return v.state.doc.lineAt(sel.head).text.trim();
           const ranges = statementRanges(text);
           const hit = ranges.find((r) => sel.head >= r.from && sel.head <= r.to)
             ?? [...ranges].reverse().find((r) => r.from <= sel.head)

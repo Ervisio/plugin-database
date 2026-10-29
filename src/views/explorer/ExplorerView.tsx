@@ -1,4 +1,4 @@
-import { databasesCache, tablesCache, type DbInstance } from '../../api';
+import { databasesCache, isNoSql, tablesCache, type DbInstance } from '../../api';
 import { patchExplorer, useExplorer, type ExplorerTab } from '../../explorerState';
 import { t } from '../../i18n';
 import { Button, EmptyState, Tabs, type TabItem } from '../../kit';
@@ -23,9 +23,12 @@ export function ExplorerView({ inst }: { inst: DbInstance }) {
     { id: 'query', label: t('Query'), icon: 'code' },
   ];
   if (inst.engine !== 'sqlite') items.push({ id: 'users', label: t('Users'), icon: 'users' });
-  if (inst.engine === 'mysql') items.push({ id: 'logs', label: t('Slow log'), icon: 'logs' });
+  if (inst.engine === 'mysql' || isNoSql(inst.engine)) items.push({ id: 'logs', label: inst.engine === 'mongodb' ? t('Profiler') : t('Slow log'), icon: 'logs' });
   const tab: ExplorerTab = items.some((i) => i.id === st.tab) ? st.tab : 'data';
   const needsTable = tab === 'data' || tab === 'structure';
+  const count = tables.data?.length ?? '…';
+  const tableCount = inst.engine === 'mongodb' ? t('{n} collections', { n: count }) : inst.engine === 'redis' ? t('{n} key patterns', { n: count }) : t('{n} tables', { n: count });
+  const rowsLabel = (n: number) => (inst.engine === 'mongodb' ? t('~{n} documents', { n: formatCount(n) }) : inst.engine === 'redis' ? t('~{n} keys', { n: formatCount(n) }) : t('~{n} rows', { n: formatCount(n) }));
 
   if (dbs.error && !dbs.data) {
     return (
@@ -40,9 +43,9 @@ export function ExplorerView({ inst }: { inst: DbInstance }) {
 
   const title = st.table && needsTable ? st.table : st.db || inst.name;
   const subtitle = st.table && needsTable
-    ? [st.db, info ? (/view/i.test(info.type) ? t('view') : t('~{n} rows', { n: formatCount(info.rows_count ?? 0) })) : '', info?.engine].filter(Boolean).join(' · ')
+    ? [st.db, info ? (/view/i.test(info.type) ? t('view') : rowsLabel(info.rows_count ?? 0)) : '', info?.engine].filter(Boolean).join(' · ')
     : st.db
-      ? t('{n} tables', { n: tables.data?.length ?? '…' })
+      ? tableCount
       : t('Pick a database in the sidebar');
 
   return (
@@ -54,7 +57,7 @@ export function ExplorerView({ inst }: { inst: DbInstance }) {
       <div className="db-pane">
         {needsTable && !st.table ? (
           <div className="db-empty-pane">
-            {st.db ? t('Pick a table in the sidebar, or open the Query tab.') : t('Pick a database in the sidebar.')}
+            {st.db ? (inst.engine === 'mongodb' ? t('Pick a collection in the sidebar, or open the Query tab.') : inst.engine === 'redis' ? t('Pick a key pattern in the sidebar, or open the Query tab.') : t('Pick a table in the sidebar, or open the Query tab.')) : t('Pick a database in the sidebar.')}
           </div>
         ) : tab === 'data' ? (
           <DataGrid key={`${st.db}.${st.table}`} inst={inst} db={st.db} table={st.table} />
@@ -65,7 +68,7 @@ export function ExplorerView({ inst }: { inst: DbInstance }) {
         ) : tab === 'users' ? (
           <UsersTab inst={inst} db={st.db} />
         ) : (
-          <LogsTab inst={inst} />
+          <LogsTab inst={inst} db={st.db} />
         )}
       </div>
     </div>

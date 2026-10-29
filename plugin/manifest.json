@@ -3,7 +3,7 @@
   "name": "Databases",
   "version": "1.2.0",
   "author": "Ervisio Community",
-  "description": "HeidiSQL-style database manager for MySQL, MariaDB, PostgreSQL and SQLite: schema tree, editable data grid with live search and filters, SQL editor with autocomplete, users and slow query log.",
+  "description": "HeidiSQL-style database manager for MySQL, MariaDB, PostgreSQL, SQLite, MongoDB and Redis/Valkey: schema tree, editable data grid with live search and filters, query editor with autocomplete, users and slow query log.",
   "homepage": "https://github.com/Ervisio",
   "icon": "database",
   "entry": "index.js",

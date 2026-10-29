@@ -2,12 +2,15 @@ import { getSdk } from './sdk';
 import { CONFIG_DIR } from './settings';
 import { createCache, invalidate } from './store';
 
+export type DbEngine = 'mysql' | 'postgres' | 'sqlite' | 'mongodb' | 'redis';
+
 export interface DbInstance {
   id: string;
   name: string;
-  type: 'mysql' | 'mariadb' | 'postgres' | 'sqlite';
-  engine: 'mysql' | 'postgres' | 'sqlite';
-  mode: 'docker' | 'native' | 'file';
+  type: 'mysql' | 'mariadb' | 'postgres' | 'sqlite' | 'mongodb' | 'redis' | 'valkey';
+  engine: DbEngine;
+  /** local = found listening on its default port, not managed by a service manager or Docker. */
+  mode: 'docker' | 'native' | 'file' | 'local';
   host?: string;
   port?: number;
   container?: string;
@@ -238,9 +241,9 @@ export const dbApi = {
     callBridge<{ ok: boolean }>('create-user', { instance, ...p }),
   dropUser: (instance: DbInstance, user: string, host: string = '%') =>
     callBridge<{ ok: boolean }>('drop-user', { instance, user, host }),
-  getLogs: (instance: DbInstance) =>
-    callBridge<LogStatus>('get-logs', { instance }),
-  toggleLog: (instance: DbInstance, p: { enable: boolean; threshold?: number }) =>
+  getLogs: (instance: DbInstance, database?: string) =>
+    callBridge<LogStatus>('get-logs', { instance, database }),
+  toggleLog: (instance: DbInstance, p: { enable: boolean; threshold?: number; database?: string }) =>
     callBridge<{ ok: boolean }>('toggle-log', { instance, ...p }),
 };
 
@@ -260,7 +263,7 @@ export function invalidateTableData(inst: DbInstance, db: string, table: string)
   invalidate((k) => k.startsWith(`browse:${inst.id}|${db}|${table}|`));
 }
 export const usersCache =createCache<[DbInstance], DbUser[]>('users', (i) => i.id, async (i) => (await dbApi.listUsers(i)).users || []);
-export const logsCache = createCache<[DbInstance], LogStatus>('logs', (i) => i.id, (i) => dbApi.getLogs(i));
+export const logsCache = createCache<[DbInstance, string], LogStatus>('logs', (i, db) => `${i.id}|${db}`, (i, db) => dbApi.getLogs(i, db || undefined));
 
 /** Drops the cached data of one instance (or one of its databases). */
 export function invalidateInstance(inst: DbInstance, what: 'dbs' | 'tables' | 'users' | 'all', db?: string): void {
@@ -274,4 +277,8 @@ export function invalidateInstance(inst: DbInstance, what: 'dbs' | 'tables' | 'u
 }
 
 export const SYSTEM_DBS = ['information_schema', 'performance_schema', 'mysql', 'sys', 'postgres', 'template0', 'template1'];
-export const isSystemDb = (name: string) => SYSTEM_DBS.includes(name.toLowerCase());
+const MONGO_SYSTEM_DBS = ['admin', 'local', 'config'];
+export const isSystemDb = (name: string, engine = '') =>
+  engine === 'mongodb' ? MONGO_SYSTEM_DBS.includes(name) : engine === 'redis' ? false : SYSTEM_DBS.includes(name.toLowerCase());
+
+export const isNoSql = (engine: string) => engine === 'mongodb' || engine === 'redis';
