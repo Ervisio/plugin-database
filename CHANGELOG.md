@@ -2,6 +2,10 @@
 
 All notable changes to the Ervisio Database Plugin will be documented in this file.
 
+## 1.2.2 - 2026-10-30
+
+- update
+
 ## 1.2.1 - 2026-10-29
 
 - Run CI manually instead of on every push and pull request
