@@ -231,13 +231,13 @@ def docker_engine(image: str) -> Optional[Tuple[str, str, int]]:
 
 PORT_MAP_RE = re.compile(r"(?:[\d.]+|\[[0-9a-f:]*\]|::)?:(\d+)->(\d+)/tcp")
 
-def docker_host_port(ports: str, container_port: int) -> int:
-    """Host port published for the engine port (0.0.0.0:13306->3306/tcp), else the first published one."""
+def docker_host_port(ports: str, container_port: int) -> Optional[int]:
+    """Host port published for the engine port (0.0.0.0:13306->3306/tcp), else the first published one, else None."""
     maps = [(int(h), int(c)) for h, c in PORT_MAP_RE.findall(ports)]
     for h, c in maps:
         if c == container_port:
             return h
-    return maps[0][0] if maps else container_port
+    return maps[0][0] if maps else None
 
 LOCAL_PORTS = {
     3306: ("mysql", "mysql", "MySQL / MariaDB"),
@@ -340,6 +340,7 @@ def action_detect() -> Dict[str, Any]:
                 if not spec:
                     continue
                 db_type, engine, default_port = spec
+                host_port = docker_host_port(ports, default_port)
                 instances.append({
                     "id": f"docker-{cid[:12]}",
                     "name": f"{name} ({image})",
@@ -348,7 +349,9 @@ def action_detect() -> Dict[str, Any]:
                     "engine": engine,
                     "mode": "docker",
                     "host": "127.0.0.1",
-                    "port": docker_host_port(ports, default_port),
+                    "port": host_port or default_port,
+                    # False = no port published on the host (typical compose service): reached via the container IP.
+                    "published": bool(host_port),
                     "status": "running" if "Up" in status else "stopped",
                     "version": image
                 })
@@ -1388,6 +1391,32 @@ def action_toggle_log(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[
 # ---------------------------------------------------------------------------
 # Docker credentials: a detected container carries no password; read the one it was started with.
 # ---------------------------------------------------------------------------
+
+def fill_docker_endpoint(instance: Dict[str, Any]) -> None:
+    """A container that publishes no port (compose service without `ports:`) is not on 127.0.0.1:
+    connect to its IP on the Docker network instead. Works where the host routes to container IPs (Linux)."""
+    if instance.get("mode") != "docker" or not instance.get("container") or instance.get("published") is True:
+        return
+    if instance.get("status") == "stopped":
+        return
+    host = instance.get("host") or "127.0.0.1"
+    port = int(instance.get("port") or 0)
+    if host not in ("127.0.0.1", "localhost") or (port and port_open(host, port)):
+        return
+    try:
+        nets = json.loads(run_cmd(["docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}",
+                                   instance["container"]], timeout=20)) or {}
+    except Exception:
+        return
+    for net in nets.values():
+        ip = (net or {}).get("IPAddress")
+        if ip and port and port_open(ip, port, timeout=1.0):
+            instance["host"] = ip
+            return
+    raise RuntimeError(
+        f"Container {instance['container']} publishes no port on the host. "
+        f"Add a port mapping (e.g. ports: [\"127.0.0.1:{port}:{port}\"]) and recreate it."
+    )
 
 def fill_docker_credentials(instance: Dict[str, Any]) -> None:
     if instance.get("mode") != "docker" or instance.get("password") or not instance.get("container"):
@@ -2501,6 +2530,8 @@ def main():
     try:
         if isinstance(instance, dict) and instance:
             fill_docker_credentials(instance)
+            if action not in ("detect", "manage-instance"):
+                fill_docker_endpoint(instance)
         if isinstance(instance, dict) and instance.get("engine") in NOSQL_DRIVERS and action in NOSQL_ACTIONS:
             send_json(run_nosql(action, instance, params))
         if action == "detect":

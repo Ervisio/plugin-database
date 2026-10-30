@@ -14,6 +14,8 @@ export interface DbInstance {
   host?: string;
   port?: number;
   container?: string;
+  /** Docker only: false when the container publishes no host port (the bridge connects to its network IP). */
+  published?: boolean;
   /** Native service name (Windows service manager). */
   service?: string;
   path?: string;
