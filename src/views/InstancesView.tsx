@@ -1,3 +1,4 @@
+import { PathInput } from '@ervisio/plugin-sdk/paths';
 import { useState, type MouseEvent } from 'react';
 import { Button, ConfirmDialog, Dialog, EmptyState, Icon, IconButton, Input, Select, Skeleton, StatCard, Segmented, toast } from '../kit';
 import { dbApi, detectCache, invalidateInstance, type DbInstance } from '../api';
@@ -328,7 +329,7 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
         )}
         {mode === 'sqlite' && (
           <>
-            <Input label={t('File path')} value={sqlitePath} onChange={(e) => setSqlitePath(e.target.value)} mono />
+            <PathInput label={t('File path')} value={sqlitePath} onPathChange={setSqlitePath} mono />
             <div className="db-note"><Icon name="info" /><span>{t('Creates an empty SQLite database file on the server.')}</span></div>
           </>
         )}
