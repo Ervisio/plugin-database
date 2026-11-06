@@ -132,3 +132,36 @@ no new permissions is in the marketplace a few minutes later. The steps live in
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+## Connection library and discovery (1.4)
+
+The library is private to the signed-in Ervisio account. Create virtual folders,
+rename them, and move connections using the selector on each card. Removing a
+folder or forgetting a saved connection does not delete databases or move files.
+Manual server connections and explicitly opened SQLite files survive reloads;
+passwords are retained only when the corresponding checkbox is enabled.
+
+Automatic discovery combines native services, known Docker database images,
+standard local ports and recognized Linux process listeners on custom ports.
+The discovery report shows unavailable sources and scan limits instead of
+silently presenting an empty result. Detection does not bypass database login.
+Connection settings provide TLS certificate verification, an optional CA file,
+and MongoDB's authentication database.
+
+SQLite discovery verifies file headers rather than assuming every `.db` file is
+SQLite. It searches common server locations with a three-second / 25,000-entry /
+250-result budget, skips directory symlinks and noisy cache/dependency folders,
+and reports when the budget is reached. Add up to twelve scan folders using the
+shared chooser to search your own application locations. These choices replace
+the default roots. Use **Open SQLite** to select an existing file anywhere the
+bridge account can access without relying on discovery. Network files must be
+available as actual server filesystem paths; a saved SFTP address is not a local
+SQLite filesystem.
+
+Opening a missing database reports an error and never creates a replacement.
+Creation is a separate action and refuses existing files. Existing databases
+with spaces, Unicode or quotes in table/column names are supported; generated
+columns are shown but excluded from editing, and index metadata is displayed.
+SQLite browsing does not depend on the optional SQL/NoSQL driver runtime.
+Encrypted SQLite variants require a matching encryption driver and are not
+misidentified as ordinary SQLite files.

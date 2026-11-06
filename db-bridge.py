@@ -32,9 +32,16 @@ def check_ident(name: str, what: str = "identifier"):
     if not name or not IDENT_RE.match(name):
         raise RuntimeError(f"Invalid {what}: {name!r} (letters, digits, _ and $ only, max 64)")
 
+def engine_ident(name, engine, what="identifier"):
+    if engine != "sqlite":
+        check_ident(name, what)
+    elif not isinstance(name, str) or not name or len(name) > 1024 or any(ord(c) < 32 for c in name):
+        raise RuntimeError("Invalid SQLite " + what)
+
+
 def qident(name: str, engine: str) -> str:
-    check_ident(name)
-    if engine == "postgres":
+    engine_ident(name, engine)
+    if engine in ("postgres", "sqlite"):
         return '"' + name.replace('"', '""') + '"'
     return "`" + name.replace("`", "``") + "`"
 
@@ -108,7 +115,7 @@ def get_mysql_conn(instance: Dict[str, Any], database: Optional[str] = None):
     unix_socket = instance.get("unix_socket")
 
     # If unix socket exists and host is localhost/127.0.0.1, try unix socket
-    if not unix_socket and not IS_WINDOWS and (host in ("localhost", "127.0.0.1")):
+    if not unix_socket and not IS_WINDOWS and instance.get("mode") == "native" and instance.get("service") and port == 3306 and (host in ("localhost", "127.0.0.1")):
         for sock in ["/var/run/mysqld/mysqld.sock", "/var/run/mysql/mysql.sock", "/tmp/mysql.sock"]:
             if os.path.exists(sock):
                 unix_socket = sock
@@ -130,6 +137,9 @@ def get_mysql_conn(instance: Dict[str, Any], database: Optional[str] = None):
         kwargs["host"] = host
         kwargs["port"] = port
 
+    if instance.get("tls"):
+        import ssl
+        kwargs["ssl"] = ssl.create_default_context(cafile=instance.get("ca_file") or None)
     return pymysql.connect(**kwargs)
 
 def get_postgres_conn(instance: Dict[str, Any], database: Optional[str] = None):
@@ -148,57 +158,107 @@ def get_postgres_conn(instance: Dict[str, Any], database: Optional[str] = None):
         password=password,
         dbname=db_name,
         cursor_factory=RealDictCursor,
+        **({"sslmode":"verify-full", **({"sslrootcert":instance["ca_file"]} if instance.get("ca_file") else {})} if instance.get("tls") else {}),
         connect_timeout=5
     )
 
+def sqlite_path(path):
+    if not isinstance(path, str) or not path or "\x00" in path:
+        raise RuntimeError("Choose an existing SQLite database file.")
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def sqlite_header(path):
+    try:
+        import stat
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return False
+        with open(path, "rb") as stream:
+            return stream.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def sqlite_instance(path):
+    import hashlib
+    path = sqlite_path(path)
+    return {"id": "sqlite-" + hashlib.sha256(os.path.normcase(os.path.realpath(path)).encode()).hexdigest()[:24],
+            "name": os.path.basename(path), "path": path, "type": "sqlite", "engine": "sqlite",
+            "mode": "file", "status": "ready", "size": os.path.getsize(path)}
+
+
 def get_sqlite_conn(path: str):
     import sqlite3
-    if not os.path.exists(path) and not path.endswith(".db") and not path.endswith(".sqlite"):
-        raise RuntimeError(f"SQLite file not found: {path}")
-    conn = sqlite3.connect(path, timeout=5)
+    from pathlib import Path
+    path = sqlite_path(path)
+    if not os.path.isfile(path):
+        raise RuntimeError("SQLite file does not exist. Opening a database never creates a new file.")
+    if os.path.getsize(path) != 0 and not sqlite_header(path):
+        raise RuntimeError("This file is not a SQLite database (or it is encrypted).")
+    uri = Path(path).as_uri()
+    try:
+        conn = sqlite3.connect(uri + "?mode=rw", uri=True, timeout=5)
+    except sqlite3.OperationalError:
+        conn = sqlite3.connect(uri + "?mode=ro", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
     return conn
 
-# Actions
-WIN_SKIP_DIRS = {"appdata", "node_modules", ".git", "windows", "docker", "$recycle.bin"}
 
-def find_sqlite_windows(max_per_root: int = 15, max_depth: int = 4) -> List[Dict[str, Any]]:
-    """Shallow walk of the user profile and %ProgramData%, skipping AppData and other noisy folders."""
-    found: List[Dict[str, Any]] = []
-    roots = [os.path.expanduser("~"), os.environ.get("ProgramData", r"C:\ProgramData")]
-    for root in roots:
+def scan_sqlite(roots, max_files=250, max_depth=8, max_entries=25000, seconds=3):
+    """Bounded, header-verified discovery; never follows directory symlinks."""
+    found, warnings, seen = [], [], set()
+    started = time.monotonic()
+    scanned = 0
+    skipped = {"node_modules", ".git", ".cache", ".venv", "venv", "__pycache__", "proc", "sys", "dev", "overlay2", "overlayfs", "$recycle.bin", "windows"}
+    limited = False
+    for root in roots[:12]:
+        root = sqlite_path(root)
         if not os.path.isdir(root):
             continue
-        count = 0
-        base_depth = root.rstrip("\\/").count(os.sep)
-        for dirpath, dirnames, filenames in os.walk(root):
-            if dirpath.rstrip("\\/").count(os.sep) - base_depth >= max_depth:
-                dirnames[:] = []
-            dirnames[:] = [d for d in dirnames if d.lower() not in WIN_SKIP_DIRS]
-            for fn in filenames:
-                if not fn.lower().endswith((".db", ".sqlite", ".sqlite3")):
+        def inaccessible(error):
+            if len(warnings) < 8:
+                warnings.append({"source": "sqlite", "message": "Some folders could not be read: " + str(error.filename)})
+        for directory, dirs, files in os.walk(root, followlinks=False, onerror=inaccessible):
+            depth = os.path.relpath(directory, root).count(os.sep) + (directory != root)
+            dirs[:] = sorted(d for d in dirs if d.lower() not in skipped and not os.path.islink(os.path.join(directory, d))) if depth < max_depth else []
+            scanned += len(dirs) + len(files) + 1
+            if scanned > max_entries or time.monotonic() - started > seconds:
+                limited = True
+                break
+            for name in sorted(files):
+                if time.monotonic() - started > seconds:
+                    limited = True
+                    break
+                if name.endswith(("-wal", "-shm", "-journal")):
                     continue
-                f = os.path.join(dirpath, fn)
+                candidate = os.path.join(directory, name)
+                if os.path.islink(candidate) or not sqlite_header(candidate):
+                    continue
                 try:
-                    size = os.path.getsize(f)
+                    item = sqlite_instance(candidate)
                 except OSError:
                     continue
-                found.append({
-                    "id": f"sqlite-{base64.b64encode(f.encode()).decode()[:16]}",
-                    "name": fn,
-                    "path": f,
-                    "type": "sqlite",
-                    "engine": "sqlite",
-                    "mode": "file",
-                    "status": "ready",
-                    "size": size
-                })
-                count += 1
-                if count >= max_per_root:
+                if item["id"] not in seen:
+                    found.append(item); seen.add(item["id"])
+                if len(found) >= max_files or time.monotonic() - started > seconds:
+                    limited = True
                     break
-            if count >= max_per_root:
+            if limited:
                 break
-    return found
+        if limited:
+            break
+    return found, {"roots": roots, "scanned": scanned, "limited": limited, "warnings": warnings}
+
+
+def default_sqlite_roots():
+    if IS_WINDOWS:
+        return [os.path.expanduser("~"), os.environ.get("ProgramData", r"C:\ProgramData")]
+    return list(dict.fromkeys([os.path.expanduser("~"), "/home", "/srv", "/var/www", "/opt", "/var/lib"]))
+
+
+def find_sqlite_windows(max_per_root=15, max_depth=4):
+    return scan_sqlite(default_sqlite_roots(), max_files=max_per_root * 2, max_depth=max_depth)[0]
+
 
 SYSTEMD_UNITS = [
     (re.compile(r"^mariadb(@.*)?\.service$"), ("mariadb", "mysql", 3306, "MariaDB")),
@@ -215,9 +275,14 @@ DOCKER_IMAGES = {
     "mariadb": ("mariadb", "mysql", 3306),
     "mysql": ("mysql", "mysql", 3306),
     "mysql-server": ("mysql", "mysql", 3306),
+    "percona": ("mysql", "mysql", 3306),
+    "percona-server": ("mysql", "mysql", 3306),
+    "mariadb-galera": ("mariadb", "mysql", 3306),
     "postgres": ("postgres", "postgres", 5432),
     "postgresql": ("postgres", "postgres", 5432),
     "postgis": ("postgres", "postgres", 5432),
+    "timescaledb": ("postgres", "postgres", 5432),
+    "pgvector": ("postgres", "postgres", 5432),
     "mongo": ("mongodb", "mongodb", 27017),
     "mongodb": ("mongodb", "mongodb", 27017),
     "mongodb-community-server": ("mongodb", "mongodb", 27017),
@@ -257,8 +322,9 @@ def port_open(host: str, port: int, timeout: float = 0.3) -> bool:
     except OSError:
         return False
 
-def action_detect() -> Dict[str, Any]:
+def action_detect(params=None) -> Dict[str, Any]:
     instances = []
+    warnings = []
     
     # 1. Native services (systemd on Linux, the service manager on Windows)
     if IS_WINDOWS:
@@ -281,11 +347,11 @@ def action_detect() -> Dict[str, Any]:
                     db_type, engine, port, label = "valkey", "redis", 6379, "Valkey"
                 else:
                     continue
-                if db_type in seen:
+                if name in seen:
                     continue
-                seen.add(db_type)
+                seen.add(name)
                 instances.append({
-                    "id": f"native-{db_type}",
+                    "id": f"native-{name}",
                     "name": f"{label} (Windows service)",
                     "type": db_type,
                     "engine": engine,
@@ -296,11 +362,11 @@ def action_detect() -> Dict[str, Any]:
                     "status": "running" if svc.get("State") == "Running" else "stopped",
                     "version": "native"
                 })
-        except Exception:
-            pass
+        except Exception as error:
+            warnings.append({"source":"services", "message":str(error)[:400]})
     else:
         try:
-            units_out = run_cmd(["systemctl", "list-units", "--type=service", "--state=all", "--no-pager", "--no-legend"])
+            units_out = run_cmd(["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend"], timeout=10)
             seen = set()
             for line in units_out.splitlines():
                 parts = line.replace("●", " ").split()
@@ -315,12 +381,12 @@ def action_detect() -> Dict[str, Any]:
                 if not hit:
                     continue
                 db_type, engine, port, label = hit
-                if db_type in seen or (db_type == "mysql" and "mariadb" in seen):
+                if unit in seen:
                     continue
-                seen.add(db_type)
+                seen.add(unit)
                 instances.append({
-                    "id": f"native-{db_type}",
-                    "name": f"{label} (Native Systemd)",
+                    "id": f"native-{unit}",
+                    "name": f"{label} ({unit})",
                     "type": db_type,
                     "engine": engine,
                     "mode": "native",
@@ -330,12 +396,12 @@ def action_detect() -> Dict[str, Any]:
                     "status": "running" if "running" in line else "stopped",
                     "version": "native"
                 })
-        except Exception:
-            pass
+        except Exception as error:
+            warnings.append({"source":"services", "message":str(error)[:400]})
 
     # 2. Docker database containers
     try:
-        docker_out = run_cmd(["docker", "ps", "-a", "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}"])
+        docker_out = run_cmd(["docker", "ps", "-a", "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}"], timeout=10)
         for line in docker_out.splitlines():
             parts = line.split("|")
             if len(parts) >= 5:
@@ -359,8 +425,29 @@ def action_detect() -> Dict[str, Any]:
                     "status": "running" if "Up" in status else "stopped",
                     "version": image
                 })
-    except Exception:
-        pass
+    except Exception as error:
+        warnings.append({"source":"docker", "message":str(error)[:400]})
+
+    # Read local process listeners too: clusters often use non-default ports.
+    if not IS_WINDOWS:
+        try:
+            listeners = run_cmd(["ss", "-H", "-ltnp"], timeout=5)
+            taken = {i.get("port") for i in instances if i.get("status") == "running"}
+            for line in listeners.splitlines():
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                spec = next((value for process, value in [("mariadbd",("mariadb","mysql","MariaDB")),("mysqld",("mysql","mysql","MySQL")),("postgres",("postgres","postgres","PostgreSQL")),("mongod",("mongodb","mongodb","MongoDB")),("redis-server",("redis","redis","Redis")),("valkey-server",("valkey","redis","Valkey")),("keydb-server",("redis","redis","KeyDB"))] if '"'+process+'"' in line), None)
+                if not spec:
+                    continue
+                port = int(parts[3].rsplit(":",1)[-1])
+                if port in taken:
+                    continue
+                kind, engine, label = spec
+                instances.append({"id":f"local-{kind}-{port}","name":f"{label} (localhost:{port})","type":kind,"engine":engine,"mode":"local","host":"127.0.0.1","port":port,"status":"running","version":"local"})
+                taken.add(port)
+        except Exception as error:
+            warnings.append({"source":"listeners","message":str(error)[:400]})
 
     # 3. Engines listening on their default local port that neither the service manager nor Docker reported
     #    (started by hand, portable builds, other service managers).
@@ -380,31 +467,19 @@ def action_detect() -> Dict[str, Any]:
             "version": "local"
         })
 
-    # 4. Known SQLite files (/home/ubuntu and /var/lib; the profile and ProgramData on Windows)
-    sqlite_files = []
-    if IS_WINDOWS:
-        sqlite_files = find_sqlite_windows()
-    for root_dir in ([] if IS_WINDOWS else ["/home/ubuntu", "/var/lib"]):
-        try:
-            for ext in ["*.db", "*.sqlite", "*.sqlite3"]:
-                for f in glob.glob(os.path.join(root_dir, "**", ext), recursive=True)[:15]:
-                    if os.path.isfile(f) and not f.startswith("/var/lib/docker"):
-                        sqlite_files.append({
-                            "id": f"sqlite-{base64.b64encode(f.encode()).decode()[:16]}",
-                            "name": os.path.basename(f),
-                            "path": f,
-                            "type": "sqlite",
-                            "engine": "sqlite",
-                            "mode": "file",
-                            "status": "ready",
-                            "size": os.path.getsize(f)
-                        })
-        except Exception:
-            pass
+    roots = (params or {}).get("roots") or default_sqlite_roots()
+    if not isinstance(roots, list) or len(roots) > 12 or any(not isinstance(p, str) or not os.path.isabs(p) for p in roots):
+        raise RuntimeError("Choose up to 12 absolute SQLite discovery folders.")
+    sqlite_files, scan = scan_sqlite(roots)
+    warnings.extend(scan["warnings"])
+    if scan["limited"]:
+        warnings.append({"source":"sqlite", "message":"Discovery reached its time or size limit. Choose a narrower scan folder or open a SQLite file directly."})
 
     return {
         "instances": instances,
         "sqlite_files": sqlite_files,
+        "warnings": warnings,
+        "discovery": {"roots": scan["roots"], "scanned": scan["scanned"], "limited": scan["limited"]},
         "supported_versions": {
             "mysql": ["8.4-lts", "8.0", "9.0", "5.7"],
             "mariadb": ["11.4-lts", "11.2", "10.11-lts", "10.6"],
@@ -547,14 +622,18 @@ def action_create_sqlite(params: Dict[str, Any]) -> Dict[str, Any]:
     if not path:
         raise RuntimeError("File path is required for SQLite database")
     path = os.path.expanduser(path)
-    if not path.endswith(".sqlite") and not path.endswith(".db"):
+    if not path.lower().endswith((".sqlite", ".db", ".sqlite3", ".db3")):
         path = path + ".sqlite"
     dir_name = os.path.dirname(os.path.abspath(path))
     if not os.path.exists(dir_name):
         os.makedirs(dir_name, exist_ok=True)
+    if os.path.exists(path):
+        raise RuntimeError("A file already exists at this path. Use Open SQLite instead.")
     import sqlite3
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(descriptor)
     conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE IF NOT EXISTS _info (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, note TEXT)")
+    conn.execute("PRAGMA user_version=0")
     conn.commit()
     conn.close()
     return {"ok": True, "path": path}
@@ -599,7 +678,12 @@ def action_list_databases(instance: Dict[str, Any]) -> Dict[str, Any]:
     engine = instance.get("engine", "mysql")
     if engine == "sqlite":
         path = instance.get("path")
-        return {"databases": [{"name": os.path.basename(path), "tables_count": 0, "size": os.path.getsize(path) if os.path.exists(path) else 0}]}
+        conn = get_sqlite_conn(path)
+        try:
+            count = conn.execute("SELECT count(*) FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'").fetchone()[0]
+        finally:
+            conn.close()
+        return {"databases": [{"name": os.path.basename(path), "tables_count": count, "size_bytes": os.path.getsize(path)}]}
 
     dbs = []
     if engine == "mysql":
@@ -751,11 +835,15 @@ def action_list_tables(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict
                 # Count rows
                 rc = 0
                 try:
+                    deadline = time.monotonic() + 0.05
+                    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
                     c2 = conn.cursor()
-                    c2.execute(f"SELECT COUNT(*) FROM \"{row['name']}\"")
+                    c2.execute("SELECT COUNT(*) FROM " + _quote("sqlite", row["name"]))
                     rc = c2.fetchone()[0]
                 except Exception:
                     pass
+                finally:
+                    conn.set_progress_handler(None, 0)
                 tables.append({
                     "name": row["name"],
                     "type": "BASE TABLE" if row["type"] == "table" else "VIEW",
@@ -774,7 +862,7 @@ def action_list_tables(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict
 def action_table_structure(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
     db_name = params.get("database")
     tbl_name = params.get("table")
-    check_ident(tbl_name, "table name")
+    engine_ident(tbl_name, instance.get("engine", "mysql"), "table name")
     engine = instance.get("engine", "mysql")
     columns = []
     indexes = []
@@ -872,11 +960,11 @@ def action_table_structure(instance: Dict[str, Any], params: Dict[str, Any]) -> 
             conn.close()
 
     elif engine == "sqlite":
-        check_ident(tbl_name, "table name")
+        engine_ident(tbl_name, instance.get("engine", "mysql"), "table name")
         conn = get_sqlite_conn(instance.get("path"))
         try:
             cur = conn.cursor()
-            cur.execute(f'PRAGMA table_info("{tbl_name}")')
+            cur.execute(f'PRAGMA table_xinfo({_quote("sqlite", tbl_name)})')
             for row in cur.fetchall():
                 columns.append({
                     "name": row["name"],
@@ -884,9 +972,15 @@ def action_table_structure(instance: Dict[str, Any], params: Dict[str, Any]) -> 
                     "nullable": "YES" if row["notnull"] == 0 else "NO",
                     "key_type": "PRI" if row["pk"] > 0 else "",
                     "default_val": row["dflt_value"],
-                    "extra": "auto_increment" if row["pk"] == 1 and row["type"].upper() == "INTEGER" else "",
+                    "extra": "generated" if row["hidden"] else "auto_increment" if row["pk"] == 1 and row["type"].upper() == "INTEGER" else "",
                     "comment": ""
                 })
+            cur.execute(f'PRAGMA index_list({_quote("sqlite", tbl_name)})')
+            for index in cur.fetchall():
+                index_name = index["name"]
+                cur.execute(f'PRAGMA index_info({_quote("sqlite", index_name)})')
+                for column in cur.fetchall():
+                    indexes.append({"name":index_name,"column":column["name"] or "(expression)","unique":bool(index["unique"]),"seq":column["seqno"]+1})
             cur.execute("SELECT sql FROM sqlite_master WHERE name = ?", (tbl_name,))
             r = cur.fetchone()
             if r:
@@ -967,13 +1061,13 @@ def _column_meta(engine: str, cur, tbl_name: str) -> List[Dict[str, Any]]:
                 "default": _ser(r["default_val"]),
             })
     elif engine == "sqlite":
-        cur.execute(f'PRAGMA table_info("{tbl_name}")')
+        cur.execute(f'PRAGMA table_xinfo({_quote("sqlite", tbl_name)})')
         for r in cur.fetchall():
             meta.append({
                 "name": r["name"], "type": r["type"], "pk": r["pk"] > 0,
                 "nullable": r["notnull"] == 0 and r["pk"] == 0,
                 "auto": r["pk"] == 1 and (r["type"] or "").upper() == "INTEGER",
-                "default": r["dflt_value"],
+                "default": r["dflt_value"], "generated": bool(r["hidden"]),
             })
     return meta
 
@@ -986,7 +1080,7 @@ FILTER_OPS = {
 BINARY_TYPES = ("blob", "binary", "bytea")
 
 def _quote(engine: str, name: str) -> str:
-    return f"`{name}`" if engine == "mysql" else f'"{name}"'
+    return qident(name, engine)
 
 def _as_text(engine: str, col: str) -> str:
     return f"CAST({col} AS CHAR)" if engine == "mysql" else f"CAST({col} AS TEXT)"
@@ -1045,9 +1139,9 @@ def action_browse_data(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict
     sort_col = params.get("sort_col")
     sort_dir = "DESC" if str(params.get("sort_dir", "")).upper() == "DESC" else "ASC"
     engine = instance.get("engine", "mysql")
-    check_ident(tbl_name, "table name")
+    engine_ident(tbl_name, instance.get("engine", "mysql"), "table name")
     if sort_col:
-        check_ident(sort_col, "sort column")
+        engine_ident(sort_col, engine, "sort column")
     if engine == "postgres":
         check_ident(db_name or "", "database name")
 
@@ -1093,9 +1187,9 @@ def action_save_row(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[st
     row_data = params.get("data") or {}
     pks = params.get("pks") or {}
     is_new = bool(params.get("is_new", False))
-    check_ident(tbl_name, "table name")
+    engine_ident(tbl_name, instance.get("engine", "mysql"), "table name")
     for c in list(row_data.keys()) + list(pks.keys()):
-        check_ident(c, "column name")
+        engine_ident(c, instance.get("engine", "mysql"), "column name")
     if not is_new and not pks:
         raise RuntimeError("Primary keys required to update a row")
     if not is_new and not row_data:
@@ -1133,10 +1227,10 @@ def action_delete_row(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[
     pks_list = params.get("pks_list") or ([params["pks"]] if params.get("pks") else [])
     if not pks_list or any(not p for p in pks_list):
         raise RuntimeError("Primary keys required to delete a row")
-    check_ident(tbl_name, "table name")
+    engine_ident(tbl_name, instance.get("engine", "mysql"), "table name")
     for p in pks_list:
         for c in p.keys():
-            check_ident(c, "column name")
+            engine_ident(c, instance.get("engine", "mysql"), "column name")
 
     engine = instance.get("engine", "mysql")
     t = _quote(engine, tbl_name)
@@ -1489,6 +1583,10 @@ def get_mongo_client(instance: Dict[str, Any]):
         kw["username"] = instance["user"]
         kw["password"] = instance.get("password", "")
         kw["authSource"] = instance.get("auth_db") or "admin"
+    if instance.get("tls"):
+        kw["tls"] = True
+        if instance.get("ca_file"):
+            kw["tlsCAFile"] = instance["ca_file"]
     return pymongo.MongoClient(**kw)
 
 def _check_mongo_db(name: str) -> str:
@@ -2117,6 +2215,7 @@ def get_redis(instance: Dict[str, Any], db: int = 0):
         socket_connect_timeout=5,
         decode_responses=True,
         encoding_errors="replace",
+        **({"ssl":True,"ssl_cert_reqs":"required", **({"ssl_ca_certs":instance["ca_file"]} if instance.get("ca_file") else {})} if instance.get("tls") else {}),
     )
 
 def _redis_db(name: Any) -> int:
@@ -2478,7 +2577,7 @@ def run_nosql(action: str, instance: Dict[str, Any], params: Dict[str, Any]) -> 
 PAYLOAD_NAME_RE = re.compile(r"^[a-z0-9-]{8,64}$")
 PAYLOAD_SUBDIR = ".config/ervisio/plugins/database/tmp"
 
-def read_payload_file(name: str) -> str:
+def read_payload_file(name: str, consume: bool = True) -> str:
     """Large or secret payloads are written by the UI (sdk.files) to ~/.config/ervisio/plugins/database/tmp/<name>.json
     of the signed-in user. The bridge may run as that user or as root through sudo, so look in both homes.
     The file is removed once read."""
@@ -2502,10 +2601,11 @@ def read_payload_file(name: str) -> str:
         if os.path.isfile(path):
             with open(path, "r", encoding="utf-8") as fh:
                 data = fh.read()
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            if consume:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
             return data
     raise RuntimeError("payload file not found")
 
@@ -2514,18 +2614,11 @@ def main():
         send_error("Action argument missing")
 
     action = sys.argv[1]
-    if action != "runtime-prepare":
-        try:
-            activate_runtime()
-        except DependencyMissing as e:
-            send_error(str(e), "dependency_missing")
-        except Exception as e:
-            send_error(str(e))
     raw_payload = sys.argv[2] if len(sys.argv) > 2 else ""
     params = {}
     if raw_payload.startswith("@file:"):
         try:
-            params = json.loads(read_payload_file(raw_payload[len("@file:"):]))
+            params = json.loads(read_payload_file(raw_payload[len("@file:"):], consume=False))
         except Exception as e:
             send_error(f"Invalid payload file: {e}")
     elif raw_payload:
@@ -2540,6 +2633,20 @@ def main():
                 send_error(f"Invalid payload encoding: {e}")
 
     instance = params.get("instance", {})
+    if action not in ("runtime-prepare", "detect", "open-sqlite", "create-sqlite") and instance.get("engine") != "sqlite":
+        try:
+            activate_runtime()
+        except DependencyMissing as e:
+            send_error(str(e), "dependency_missing")
+        except Exception as e:
+            send_error(str(e))
+
+
+    if raw_payload.startswith("@file:"):
+        try:
+            read_payload_file(raw_payload[len("@file:"):])
+        except Exception as error:
+            send_error(f"Invalid payload file: {error}")
 
     try:
         if action == "runtime-status":
@@ -2555,13 +2662,20 @@ def main():
         if isinstance(instance, dict) and instance.get("engine") in NOSQL_DRIVERS and action in NOSQL_ACTIONS:
             send_json(run_nosql(action, instance, params))
         if action == "detect":
-            send_json(action_detect())
+            send_json(action_detect(params))
         elif action == "install-winget":
             send_json(action_install_winget(params))
         elif action == "install-docker":
             send_json(action_install_docker(params))
         elif action == "install-apt":
             send_json(action_install_apt(params))
+        elif action == "open-sqlite":
+            conn = get_sqlite_conn(params.get("path"))
+            try:
+                conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchall()
+            finally:
+                conn.close()
+            send_json(sqlite_instance(params.get("path")))
         elif action == "create-sqlite":
             send_json(action_create_sqlite(params))
         elif action == "manage-instance":
