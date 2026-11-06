@@ -186,6 +186,29 @@ class RuntimeTests(unittest.TestCase):
                 finally:
                     os.umask(previous)
 
+    @unittest.skipUnless(__import__('os').name == 'posix', 'POSIX copied modes and symlinks')
+    def test_private_tree_tightens_copied_modes_without_following_links(self):
+        import os
+        import stat
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'stage'
+            root.mkdir(mode=0o700)
+            copied = root / 'copied-script'
+            copied.write_text('fixture')
+            copied.chmod(0o775)
+            outside = Path(folder) / 'outside'
+            outside.mkdir()
+            executable = outside / 'python'
+            executable.write_text('fixture')
+            executable.chmod(0o755)
+            (root / 'python').symlink_to(executable)
+            (root / 'lib64').symlink_to(outside, target_is_directory=True)
+            db_runtime.private_tree(root)
+            self.assertEqual(stat.S_IMODE(copied.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(executable.stat().st_mode), 0o755)
+            self.assertTrue((root / 'python').is_symlink())
+            self.assertTrue((root / 'lib64').is_symlink())
+
     @unittest.skipUnless(__import__('os').name == 'posix', 'POSIX symlink/permissions')
     def test_symlink_and_writable_runtime_are_refused(self):
         import os
