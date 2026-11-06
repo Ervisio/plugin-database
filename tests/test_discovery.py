@@ -130,6 +130,17 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(result['warnings'])
 
     @unittest.skipUnless(os.name=='posix','Linux service instances')
+    def test_postgres_cluster_ports_and_aggregate_service(self):
+        units='postgresql.service loaded active exited PostgreSQL\npostgresql@16-main.service loaded active running PostgreSQL\npostgresql@17-main.service loaded active running PostgreSQL'
+        def command(args,**kwargs):
+            if args[0]=='systemctl':return units
+            if args[0]=='pg_lsclusters':return '16 main 5433 online postgres /data/a /log/a\n17 main 5434 online postgres /data/b /log/b'
+            return ''
+        with tempfile.TemporaryDirectory() as folder,patch.object(bridge,'run_cmd',side_effect=command),patch.object(bridge,'port_open',return_value=False):
+            result=bridge.action_detect({'roots':[folder]})
+            self.assertEqual([instance['port'] for instance in result['instances']],[5433,5434])
+
+    @unittest.skipUnless(os.name=='posix','Linux service instances')
     def test_multiple_native_clusters_are_not_dropped(self):
         lines='postgresql@16-main.service loaded active running PostgreSQL\npostgresql@17-main.service loaded active running PostgreSQL'
         with tempfile.TemporaryDirectory() as folder, patch.object(bridge,'run_cmd',side_effect=lambda args,**kw: lines if args[0]=='systemctl' else ''),patch.object(bridge,'port_open',return_value=False):

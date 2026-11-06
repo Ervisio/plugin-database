@@ -367,6 +367,14 @@ def action_detect(params=None) -> Dict[str, Any]:
     else:
         try:
             units_out = run_cmd(["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend"], timeout=10)
+            clusters = {}
+            try:
+                for line in run_cmd(["pg_lsclusters", "--no-header"], timeout=5).splitlines():
+                    fields = line.split()
+                    if len(fields) >= 4 and fields[2].isdigit():
+                        clusters[f"postgresql@{fields[0]}-{fields[1]}.service"] = int(fields[2])
+            except Exception:
+                pass  # Optional PostgreSQL tooling, not required by other engines.
             seen = set()
             for line in units_out.splitlines():
                 parts = line.replace("●", " ").split()
@@ -381,6 +389,9 @@ def action_detect(params=None) -> Dict[str, Any]:
                 if not hit:
                     continue
                 db_type, engine, port, label = hit
+                if unit == "postgresql.service" and clusters:
+                    continue
+                port = clusters.get(unit, port)
                 if unit in seen:
                     continue
                 seen.add(unit)

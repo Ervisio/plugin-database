@@ -5,7 +5,7 @@ import { getSdk } from './sdk';
 export interface Library { folders: {id:string;name:string}[]; placement:Record<string,string>; saved:DbInstance[]; roots:string[] }
 export function mergeConnections(detected:DbInstance[],saved:DbInstance[]):DbInstance[]{
  const items=new Map(detected.map(instance=>[instance.id,instance]));
- for(const instance of saved){const current=items.get(instance.id);items.set(instance.id,current?{...instance,...current,name:instance.name,user:instance.user??current.user,password:instance.password??current.password,tls:instance.tls??current.tls,ca_file:instance.ca_file??current.ca_file,auth_db:instance.auth_db??current.auth_db,unix_socket:instance.unix_socket??current.unix_socket}:instance);}
+ for(const instance of saved){const current=items.get(instance.id);items.set(instance.id,current?{...instance,...current,name:instance.name,host:instance.host??current.host,port:instance.port??current.port,user:instance.user??current.user,password:instance.password??current.password,tls:instance.tls??current.tls,ca_file:instance.ca_file??current.ca_file,auth_db:instance.auth_db??current.auth_db,unix_socket:instance.unix_socket??current.unix_socket}:instance);}
  return [...items.values()];
 }
 const empty=():Library=>({folders:[],placement:{},saved:[],roots:[]});
