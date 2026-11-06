@@ -1,3 +1,5 @@
+import { t } from './i18n';
+import { ensureLibrary } from './library';
 import { getSdk } from './sdk';
 import { CONFIG_DIR } from './settings';
 import { createCache, invalidate } from './store';
@@ -23,6 +25,11 @@ export interface DbInstance {
   version?: string;
   user?: string;
   password?: string;
+  tls?: boolean;
+  ca_file?: string;
+  auth_db?: string;
+  unix_socket?: string;
+  default_db?: string;
 }
 
 export interface DatabaseInfo {
@@ -73,6 +80,7 @@ export interface QueryResult {
 
 /** Column details returned with the data so the grid knows the primary key without a second request. */
 export interface ColumnMeta {
+  generated?: boolean;
   name: string;
   type: string;
   pk: boolean;
@@ -132,6 +140,8 @@ export interface DetectResult {
   instances: DbInstance[];
   sqlite_files: DbInstance[];
   supported_versions: Record<string, string[]>;
+  warnings?: {source:string;message:string}[];
+  discovery?: {roots:string[];scanned:number;limited:boolean};
 }
 
 function toBase64(text: string): string {
@@ -194,6 +204,7 @@ async function encodePayload(payload: unknown): Promise<string> {
 export async function callBridge<T>(action: string, payload: any = {}): Promise<T> {
   const sdk = getSdk();
   const res = await sdk.api.exec('db-bridge', [action, await encodePayload(payload)]);
+  if(res.truncated)throw new Error(t('The database response is too large. Narrow your query or reduce the page size.'));
 
   if (res.exitCode !== 0 && !res.stdout.trim()) {
     throw new Error(res.stderr || `Bridge error (exit ${res.exitCode})`);
@@ -212,7 +223,8 @@ export async function callBridge<T>(action: string, payload: any = {}): Promise<
 export const dbApi = {
   runtimeStatus: () => callBridge<{ ready: boolean; drivers: Record<string, boolean>; python: string; isolated: boolean }>('runtime-status'),
   prepareRuntime: () => callBridge<{ ok: boolean; ready: boolean }>('runtime-prepare'),
-  detect: () => callBridge<DetectResult>('detect'),
+  detect: async () => { const library=await ensureLibrary().catch(()=>null); return callBridge<DetectResult>('detect',library?.roots.length?{roots:library.roots}:{}); },
+  openSqlite: (path:string) => callBridge<DbInstance>('open-sqlite',{path}),
   installDocker: (p: { engine: string; version: string; name: string; password: string; port: number }) =>
     callBridge<{ ok: boolean; container_id: string }>('install-docker', p),
   installApt: (p: { engine: string; password?: string }) =>

@@ -78,3 +78,15 @@
 .db-root .cm-completionMatchedText { text-decoration: none; color: var(--acc); font-weight: 700; }
 .db-root .cm-tooltip-autocomplete ul li[aria-selected] .cm-completionMatchedText { color: inherit; }
 .db-root .cm-completionIcon { opacity: 0.55; }
+
+/* Account-owned connection library. Virtual folders never move database files. */
+.db-library-layout{display:flex;gap:18px;align-items:flex-start;min-width:0}
+.db-library-content{flex:1;min-width:0;display:flex;flex-direction:column;gap:16px}
+.db-library-folders{position:sticky;top:0;width:220px;flex:none;padding:12px;border-radius:14px;background:var(--sunk);display:flex;flex-direction:column;gap:7px}
+.db-library-folder-heading,.db-library-folder-row{display:flex;align-items:center;gap:4px;min-width:0}
+.db-library-folder-heading b{flex:1}.db-library-folders button:not(.ui-btn){display:flex;align-items:center;gap:8px;padding:9px;border:0;border-radius:8px;background:transparent;color:var(--ink2);text-align:left;cursor:pointer;min-width:0;font:inherit}
+.db-library-folders>button,.db-library-folder-row>button:first-child{width:100%}.db-library-folders button.active{background:var(--acc-s);color:var(--acc)}.db-library-folders button span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.db-library-folders p{margin:5px 0;font-size:11px;line-height:1.5;color:var(--ink2)}
+.db-library-scan-root{display:flex;align-items:center;gap:4px;min-width:0}.db-library-scan-root code{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.db-library-error{color:var(--err)!important}
+.db-library-move{max-width:140px;min-width:70px;background:var(--surface);color:var(--ink2);border:1px solid var(--line);border-radius:7px;padding:5px;font:inherit;font-size:11px}
+.db-discovery-report{padding:12px 16px;background:var(--warn-s);border-radius:12px;font-size:12px;color:var(--ink2)}.db-discovery-report summary{cursor:pointer;color:var(--ink);font-weight:600}.db-discovery-report p{overflow-wrap:anywhere}
+@media(max-width:800px){.db-library-layout{flex-direction:column}.db-library-folders{position:static;width:100%}.db-library-content{width:100%}}

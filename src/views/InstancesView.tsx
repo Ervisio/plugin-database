@@ -1,5 +1,7 @@
+import { LibraryFolders, ConnectionFolder } from '../ui/ConnectionLibrary';
+import { mergeConnections, rememberInstance, updateLibrary, useLibrary } from '../library';
 import { PathInput } from '@ervisio/plugin-sdk/paths';
-import { useState, type MouseEvent } from 'react';
+import { useEffect, useState, type MouseEvent } from 'react';
 import { Button, ConfirmDialog, Dialog, EmptyState, Icon, IconButton, Input, Select, Skeleton, StatCard, Segmented, toast } from '../kit';
 import { dbApi, detectCache, invalidateInstance, type DbInstance } from '../api';
 import { t } from '../i18n';
@@ -14,6 +16,7 @@ import { getSdk } from '../sdk';
 export function InstancesView({ search }: { search: string }) {
   const det = detectCache.use([]);
   const [recent] = useFile('recent');
+  const library=useLibrary();const [folder,setFolder]=useState('all');const [connection,setConnection]=useState<DbInstance|null>(null);const [openingSqlite,setOpeningSqlite]=useState(false);
 
   const [openInstall, setOpenInstall] = useState(false);
   const [openConnect, setOpenConnect] = useState(false);
@@ -22,14 +25,15 @@ export function InstancesView({ search }: { search: string }) {
 
   const instances = det.data?.instances ?? [];
   const sqliteFiles = det.data?.sqlite_files ?? [];
-  const all = [...instances, ...sqliteFiles];
+  const all = mergeConnections([...instances,...sqliteFiles],library.value.saved);
   const q = search.trim().toLowerCase();
-  const filtered = all.filter((i) => !q || [i.name, i.type, i.mode, i.host, String(i.port || ''), i.path || ''].join(' ').toLowerCase().includes(q));
-  const running = all.filter((i) => i.status !== 'stopped').length;
+  const filtered = all.filter(i=>folder==='all'||(folder==='unfiled'?!library.value.placement[i.id]:library.value.placement[i.id]===folder)).filter((i) => !q || [i.name, i.type, i.mode, i.host, String(i.port || ''), i.path || ''].join(' ').toLowerCase().includes(q));
+  const running = all.filter((i) => i.status === 'running').length;
   const recentList = recent.ids.map((id) => filtered.find((i) => i.id === id)).filter(Boolean) as DbInstance[];
   const rest = filtered.filter((i) => !recent.ids.includes(i.id));
 
   const open = (inst: DbInstance) => {
+    if(inst.id.startsWith('custom-')&&inst.password===undefined){setConnection(inst);setOpenConnect(true);return;}
     void pushRecent(inst.id);
     openExplorer(inst);
   };
@@ -64,8 +68,9 @@ export function InstancesView({ search }: { search: string }) {
     }
   };
 
+  const openSqlite=async()=>{setOpeningSqlite(true);try{const selected=await getSdk().files.pick?.({mode:'file',title:t('Open SQLite database')});if(!selected)return;if(selected.path.startsWith('remote:'))throw new Error(t('Choose a file on this server.'));const instance=await dbApi.openSqlite(selected.path);await rememberInstance(instance);open(instance);}catch(error){toast.err(t('Open SQLite database'),error instanceof Error?error.message:String(error));}finally{setOpeningSqlite(false);}};
   const card = (inst: DbInstance) => {
-    const up = inst.status !== 'stopped';
+    const up = inst.status === 'running' || (inst.engine==='sqlite'&&inst.status==='ready');
     const stop = (e: MouseEvent) => e.stopPropagation();
     return (
       <div
@@ -81,7 +86,7 @@ export function InstancesView({ search }: { search: string }) {
           <span className="db-eng-ic"><Icon name={engineIcon(inst.type)} /></span>
           <div className="db-eng-t">
             <b title={inst.name}>{inst.name}</b>
-            <span>{inst.type.toUpperCase()}{inst.version ? ` ${inst.version}` : ''} · {MODE_LABEL[inst.mode]?.() ?? inst.mode}</span>
+            <span>{inst.type.toUpperCase()}{inst.version ? ` ${inst.version}` : ''} · {inst.id.startsWith('custom-')?t('Saved connection'):MODE_LABEL[inst.mode]?.() ?? inst.mode}</span>
           </div>
           <span className={`db-dot ${up ? 'db-dot--ok' : 'db-dot--warn'}`} title={inst.status} />
         </div>
@@ -98,6 +103,8 @@ export function InstancesView({ search }: { search: string }) {
             </>
           )}
           <IconButton icon="copy" label={t('Copy connection string')} size="sm" onClick={() => copyConn(inst)} />
+          {inst.engine!=='sqlite'&&<IconButton icon="key" label={t('Connection settings')} size="sm" onClick={()=>{setConnection(inst);setOpenConnect(true);}}/>}
+          <ConnectionFolder instance={inst}/>{library.value.saved.some(item=>item.id===inst.id)&&<IconButton icon="close" label={t('Forget connection')} onClick={()=>void updateLibrary(value=>({...value,saved:value.saved.filter(item=>item.id!==inst.id)})).catch(error=>toast.err(t('Library could not be saved'),error.message))}/>}
           <span className="db-grow" />
           <Button size="sm" variant={up ? 'primary' : 'secondary'} icon="db-open" onClick={() => open(inst)}>{t('Open')}</Button>
         </div>
@@ -115,13 +122,16 @@ export function InstancesView({ search }: { search: string }) {
           <>
             <IconButton icon="refresh" label={t('Refresh')} loading={det.loading} onClick={() => void det.refresh()} />
             <IconButton icon="download" label={t('Export list (no passwords)')} onClick={exportList} />
-            <Button variant="secondary" icon="link" onClick={() => setOpenConnect(true)}>{t('Connect')}</Button>
+            <Button variant="secondary" icon="link" onClick={() => {setConnection(null);setOpenConnect(true);}}>{t('Connect')}</Button>
+            <Button variant="secondary" icon="files" loading={openingSqlite} onClick={()=>void openSqlite()}>{t('Open SQLite')}</Button>
             <Button variant="primary" icon="plus" onClick={() => setOpenInstall(true)}>{t('New engine')}</Button>
           </>
         }
       />
 
       <RuntimeDrivers />
+      {det.data?.warnings?.length ? <details className="db-discovery-report"><summary>{t('Discovery report')} · {det.data.warnings.length} {t('warnings')}</summary>{det.data.warnings.map((warning,index)=><p key={index}><b>{warning.source}</b>: {warning.message}</p>)}<p>{t('Detected servers may still require credentials. Discovery does not bypass authentication.')}</p></details>:null}
+      <div className="db-library-layout"><LibraryFolders instances={all} selected={folder} onSelect={setFolder} onRescan={()=>void det.refresh()}/><div className="db-library-content">
       {!det.data && det.loading ? (
         <Skeleton lines={4} />
       ) : det.error && !det.data ? (
@@ -138,8 +148,8 @@ export function InstancesView({ search }: { search: string }) {
           {filtered.length === 0 ? (
             <EmptyState
               icon="db-database"
-              title={q ? t('No engines match “{q}”', { q: search }) : t('No databases found')}
-              text={q ? undefined : t('No SQL or NoSQL database was detected. Deploy one with one click.')}
+              title={q ? t('No engines match “{q}”', { q: search }) : folder!=='all'?t('This folder is empty'):t('No databases found')}
+              text={q ? undefined : folder!=='all'?t('Move connections into this folder using the folder selector on each card.'):t('Review discovery warnings, choose scan folders, open a SQLite file or connect to a server.')}
               action={q ? undefined : <Button variant="primary" icon="plus" onClick={() => setOpenInstall(true)}>{t('New engine')}</Button>}
             />
           ) : (
@@ -161,6 +171,7 @@ export function InstancesView({ search }: { search: string }) {
         </>
       )}
 
+      </div></div>
       <ConfirmDialog
         open={!!pendingDelete}
         onClose={() => setPendingDelete(null)}
@@ -177,7 +188,7 @@ export function InstancesView({ search }: { search: string }) {
       />
 
       <InstallDialog open={openInstall} onClose={() => setOpenInstall(false)} versions={det.data?.supported_versions ?? {}} />
-      <ConnectDialog open={openConnect} onClose={() => setOpenConnect(false)} onConnect={open} />
+      <ConnectDialog initial={connection} open={openConnect} onClose={() => setOpenConnect(false)} onConnect={instance=>{void pushRecent(instance.id);openExplorer(instance);}} />
     </div>
   );
 }
@@ -329,7 +340,7 @@ function InstallDialog({ open, onClose, versions }: { open: boolean; onClose(): 
         )}
         {mode === 'sqlite' && (
           <>
-            <PathInput label={t('File path')} value={sqlitePath} onPathChange={setSqlitePath} mono />
+            <PathInput mode="save" label={t('File path')} value={sqlitePath} onPathChange={setSqlitePath} mono />
             <div className="db-note"><Icon name="info" /><span>{t('Creates an empty SQLite database file on the server.')}</span></div>
           </>
         )}
@@ -346,7 +357,7 @@ const CONNECT_DEFAULTS: Record<ConnectType, { port: string; user: string }> = {
   redis: { port: '6379', user: '' },
 };
 
-function ConnectDialog({ open, onClose, onConnect }: { open: boolean; onClose(): void; onConnect(inst: DbInstance): void }) {
+function ConnectDialog({ initial, open, onClose, onConnect }: { initial:DbInstance|null; open: boolean; onClose(): void; onConnect(inst: DbInstance): void }) {
   const [type, setType] = useState<ConnectType>('mysql');
   const [host, setHost] = useState('127.0.0.1');
   const [port, setPort] = useState('3306');
@@ -354,29 +365,33 @@ function ConnectDialog({ open, onClose, onConnect }: { open: boolean; onClose():
   const [pass, setPass] = useState('');
   const [name, setName] = useState('');
 
-  const submit = () => {
+  const [tls,setTls]=useState(false);const [caFile,setCaFile]=useState('');const [authDb,setAuthDb]=useState('admin');
+  const [rememberPassword,setRememberPassword]=useState(false);const [saving,setSaving]=useState(false);const [error,setError]=useState('');
+  useEffect(()=>{if(!open)return;setError('');setRememberPassword(!!initial?.password);setTls(!!initial?.tls);setCaFile(initial?.ca_file||'');setAuthDb(initial?.auth_db||'admin');setType((initial?.engine as ConnectType)||'mysql');setHost(initial?.host||'127.0.0.1');setPort(String(initial?.port||3306));setUser(initial?.user||'root');setPass(initial?.password||'');setName(initial?.name||'');},[open,initial]);
+  const submit = async () => {
     const inst: DbInstance = {
-      id: `custom-${type}-${host}-${port}-${user}`,
+      ...(initial||{}),
+      id: initial?.id || `custom-${crypto.randomUUID()}`,
       name: name.trim() || (user ? `${user}@${host}:${port}` : `${host}:${port}`),
       type,
       engine: type,
-      mode: 'native',
+      mode: initial?.mode||'local',
       host,
       port: parseInt(port, 10),
       user,
-      password: pass,
-      status: 'ready',
+      password: pass, tls, ca_file:tls?caFile:undefined, auth_db:type==='mongodb'?authDb:undefined,
+      status: initial?.status||'ready',
     };
-    onClose();
-    onConnect(inst);
+    if(!host.trim()||!Number.isInteger(inst.port)||inst.port!<1||inst.port!>65535){setError(t('Enter a valid host and port.'));return;}
+    setSaving(true);try{await rememberInstance(inst,rememberPassword);onClose();onConnect(inst);}catch(error){setError(error instanceof Error?error.message:String(error));}finally{setSaving(false);}
   };
 
   return (
     <Dialog open={open} onClose={onClose} title={t('Connect to a database')} description={t('A local or remote MySQL, MariaDB, PostgreSQL, MongoDB or Redis server')} icon="link"
-      onSubmit={(e) => { e.preventDefault(); submit(); }}
+      onSubmit={(e) => { e.preventDefault(); void submit(); }}
       footer={<>
         <Button variant="ghost" onClick={onClose}>{t('Cancel')}</Button>
-        <Button variant="primary" type="submit" icon="link">{t('Connect')}</Button>
+        <Button variant="primary" type="submit" icon="link" loading={saving}>{t('Connect')}</Button>
       </>}
     >
       <div className="db-form">
@@ -407,7 +422,11 @@ function ConnectDialog({ open, onClose, onConnect }: { open: boolean; onClose():
           <Input label={t('Username')} value={user} onChange={(e) => setUser(e.target.value)} mono placeholder={type === 'mongodb' || type === 'redis' ? t('Optional') : undefined} />
           <Input type="password" label={t('Password')} value={pass} onChange={(e) => setPass(e.target.value)} />
         </div>
-        <div className="db-note"><Icon name="key" /><span>{t('Credentials stay in memory for this session only; they are never saved.')}</span></div>
+        <label><input type="checkbox" checked={tls} onChange={event=>setTls(event.target.checked)}/>{t('Use TLS and verify the server certificate')}</label>
+        {tls&&<PathInput label={t('CA certificate (optional)')} value={caFile} onPathChange={setCaFile} mono/>}
+        {type==='mongodb'&&<Input label={t('Authentication database')} value={authDb} onChange={event=>setAuthDb(event.target.value)} mono/>}
+        {error&&<p role="alert" className="db-library-error">{error}</p>}<label><input type="checkbox" checked={rememberPassword} onChange={event=>setRememberPassword(event.target.checked)}/>{t('Remember credentials in my private account library')}</label>
+        <div className="db-note"><Icon name="key" /><span>{t('Connections are saved for your account. Passwords stay in memory unless you explicitly choose to remember them.')}</span></div>
       </div>
     </Dialog>
   );

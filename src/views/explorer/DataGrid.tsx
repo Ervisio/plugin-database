@@ -129,7 +129,7 @@ export function DataGrid({ inst, db, table }: { inst: DbInstance; db: string; ta
 
   const ck = (r: number, c: string) => `${r}:${c}`;
   const pkOf = (row: Record<string, any>) => Object.fromEntries(pks.map((k) => [k, row[k]]));
-  const canEdit = (row: Record<string, any>, col: string) => editable && !isBlob(row[col]);
+  const canEdit = (row: Record<string, any>, col: string) => editable && !data?.meta.find(item=>item.name===col)?.generated && !isBlob(row[col]);
 
   const startEdit = (r: number, c: number) => {
     const col = cols[c];

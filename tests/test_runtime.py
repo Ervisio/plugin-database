@@ -227,7 +227,10 @@ class RuntimeTests(unittest.TestCase):
         bridge = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(bridge)
         with tempfile.TemporaryDirectory() as folder:
-            conn = bridge.get_sqlite_conn(str(Path(folder) / "test.sqlite"))
+            import sqlite3
+            path = str(Path(folder) / "test.sqlite")
+            sqlite3.connect(path).execute("CREATE TABLE fixture(id INTEGER)").connection.close()
+            conn = bridge.get_sqlite_conn(path)
             conn.execute("CREATE TABLE entries(value TEXT)")
             conn.execute("INSERT INTO entries VALUES (?)", ("real SQLite",))
             self.assertEqual(conn.execute("SELECT value FROM entries").fetchone()[0], "real SQLite")

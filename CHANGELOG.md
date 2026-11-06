@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0] - 2026-11-06
+
+- Replace truncated SQLite IDs with stable full-path hashes; validate file headers, never create files while opening, preserve SQLite3 filenames and support quoted identifiers, generated columns and index metadata.
+- Add bounded SQLite discovery with configurable scan folders, visible source errors, multiple native service instances and non-default Linux process listener ports.
+- Add a per-account connection library with persistent virtual folders, saved connections, explicit credential retention, TLS verification and MongoDB authentication database settings.
+- Prevent Docker or remote MySQL connections from accidentally using the host’s unrelated local Unix socket. SQLite discovery and queries remain usable independently of optional driver runtime failures.
+
 ## [1.3.0] - 2026-11-06
 
 - Add shared SQLite file selection and export destinations: browser download, local folder, SFTP/SMB, HTTP, ErvisioDrive, ErvisioRepo and S3. Optional account-private destination settings; exports never delete old files.

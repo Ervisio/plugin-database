@@ -67,6 +67,7 @@ export function RowDialog({ inst, db, table, meta, initial, open, onClose, onSav
     const v: Record<string, string> = {};
     const n: Record<string, boolean> = {};
     for (const c of meta) {
+      if(c.generated)continue;
       const src = initial?.[c.name];
       if (initial && !c.auto) {
         if (src === null) n[c.name] = true;
@@ -80,6 +81,7 @@ export function RowDialog({ inst, db, table, meta, initial, open, onClose, onSav
   const submit = async () => {
     const data: Record<string, any> = {};
     for (const c of meta) {
+      if(c.generated)continue;
       if (nulls[c.name]) data[c.name] = null;
       else if (values[c.name] !== '') data[c.name] = values[c.name];
     }
@@ -106,7 +108,7 @@ export function RowDialog({ inst, db, table, meta, initial, open, onClose, onSav
       </>}
     >
       <div className="db-form" style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: 4 }}>
-        {meta.map((c) => {
+        {meta.filter(c=>!c.generated).map((c) => {
           const hint = [c.type, c.pk ? 'PK' : '', c.auto ? 'auto' : '', c.default !== null && c.default !== undefined ? `${t('default')} ${c.default}` : ''].filter(Boolean).join(' · ');
           return (
             <div key={c.name} className="db-row" style={{ alignItems: 'flex-end', flexWrap: 'nowrap' }}>
