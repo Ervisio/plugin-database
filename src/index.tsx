@@ -126,7 +126,6 @@ export default function activate(sdk: PluginSDK): void {
 
   // Warm up: settings first (they shape the first render), engines in the background.
   void ensureFile('settings');
-  void detectCache.get([]).catch(() => undefined);
 
   const ok = sdk.version >= 3;
   sdk.registerPage('database', ok ? Shell : TooOld);

@@ -17,6 +17,26 @@ spec.loader.exec_module(bridge)
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_inventory_never_scans_files_even_with_old_saved_roots(self):
+        with tempfile.TemporaryDirectory() as folder,patch.object(bridge,'run_cmd',return_value=''),patch.object(bridge,'port_open',return_value=False),patch.object(bridge,'scan_sqlite',side_effect=AssertionError('Automatic file scan')):
+            result=bridge.action_detect({'roots':[folder]})
+            self.assertEqual(result['sqlite_files'],[])
+            self.assertEqual(result['discovery']['scanned'],0)
+
+    def test_listing_sqlite_tables_does_not_execute_user_views(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder,'metadata.db')
+            conn=sqlite3.connect(path);conn.row_factory=sqlite3.Row
+            calls=[]
+            conn.create_function('tripwire',0,lambda:calls.append(True) or 1)
+            conn.execute('CREATE TABLE entries(id INTEGER)');conn.execute('INSERT INTO entries VALUES(1)')
+            conn.execute('CREATE VIEW expensive AS SELECT * FROM entries WHERE tripwire()=1');conn.commit()
+            with patch.object(bridge,'get_sqlite_conn',return_value=conn):
+                result=bridge.action_list_tables({'engine':'sqlite','path':str(path)},{})
+            self.assertEqual(calls,[])
+            self.assertEqual(len(result['tables']),2)
+            self.assertTrue(all(table['rows_count'] is None for table in result['tables']))
+
     def test_private_payload_survives_runtime_activation_then_is_consumed(self):
         with tempfile.TemporaryDirectory() as home:
             directory=Path(home,bridge.PAYLOAD_SUBDIR);directory.mkdir(parents=True)
@@ -66,9 +86,9 @@ class DiscoveryTests(unittest.TestCase):
     def test_header_validation_excludes_non_sqlite_and_includes_extensionless(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, 'not-a-database.db').write_text('ordinary text')
-            self.make_db(Path(folder, 'application.data'))
+            self.make_db(Path(folder, 'application.sqlite'))
             found, _ = bridge.scan_sqlite([folder])
-            self.assertEqual([i['name'] for i in found], ['application.data'])
+            self.assertEqual([i['name'] for i in found], ['application.sqlite'])
 
     def test_open_missing_never_creates_an_empty_database(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -102,7 +122,7 @@ class DiscoveryTests(unittest.TestCase):
             conn.close()
             instance=bridge.sqlite_instance(str(path))
             self.assertEqual(bridge.action_browse_data(instance, {'table':'a"b'})['rows'][0]['x"y'],'hello')
-            self.assertEqual(bridge.action_list_tables(instance,{})['tables'][0]['rows_count'],1)
+            self.assertIsNone(bridge.action_list_tables(instance,{})['tables'][0]['rows_count'])
 
     def test_create_does_not_rewrite_existing_file_and_preserves_sqlite3_extension(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -126,8 +146,10 @@ class DiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, patch.object(bridge,'run_cmd',side_effect=RuntimeError('fixture source unavailable')), patch.object(bridge,'port_open',return_value=False):
             self.make_db(Path(folder,'still-available.db'))
             result=bridge.action_detect({'roots':[folder]})
-            self.assertEqual(len(result['sqlite_files']),1)
+            self.assertEqual(len(result['sqlite_files']),0)
+            self.assertEqual(result['discovery']['scanned'],0)
             self.assertTrue(result['warnings'])
+            self.assertEqual(len(bridge.action_scan_sqlite({'roots':[folder]})['sqlite_files']),1)
 
     @unittest.skipUnless(os.name=='posix','Linux service instances')
     def test_postgres_cluster_ports_and_aggregate_service(self):

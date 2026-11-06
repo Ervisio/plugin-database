@@ -3,6 +3,7 @@
  * Add entries here ('Delete row': 'Elimina riga') to translate, nothing else needs to change.
  */
 export const IT: Record<string, string> = {
+  'Find SQLite in a folder':'Cerca SQLite in una cartella', 'No automatic file scans. Open a file or search one chosen folder when needed.':'Nessuna scansione automatica dei file. Apri un file o cerca in una cartella scelta quando serve.', 'SQLite files found':'File SQLite trovati', 'Show more databases':'Mostra altri database', 'Show more tables':'Mostra altre tabelle',
   'Database library':'Libreria database',
   'This folder is empty':'Questa cartella è vuota', 'Move connections into this folder using the folder selector on each card.':'Sposta le connessioni in questa cartella usando il selettore su ogni scheda.', 'Review discovery warnings, choose scan folders, open a SQLite file or connect to a server.':'Controlla gli avvisi di rilevamento, scegli cartelle da scansionare, apri un file SQLite o collegati a un server.', 'The database response is too large. Narrow your query or reduce the page size.':'La risposta del database è troppo grande. Restringi la query o riduci le righe per pagina.',
   'Use TLS and verify the server certificate':'Usa TLS e verifica il certificato del server', 'CA certificate (optional)':'Certificato CA (facoltativo)', 'Authentication database':'Database di autenticazione',

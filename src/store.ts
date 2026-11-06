@@ -75,6 +75,7 @@ export function createCache<A extends unknown[], T>(name: string, keyOf: (...a: 
       e = { state: IDLE as CacheState<T>, subs: new Set(), run: () => fetcher(...args) };
       registry.set(k, e as Entry<unknown>);
     }
+    e.run = () => fetcher(...args);
     return e;
   };
 
