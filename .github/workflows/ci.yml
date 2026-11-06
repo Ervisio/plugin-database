@@ -12,6 +12,16 @@ env:
   ERVISIO_REF: v0.6.2
 
 jobs:
+  runtime-isolation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Real install and helper re-exec with broken global optional packages
+        run: python scripts/test-runtime-isolation.py
+
   build:
     runs-on: ubuntu-24.04
     steps:

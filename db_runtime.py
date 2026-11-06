@@ -62,26 +62,59 @@ def runtime_python(path):
     return path / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def activate_runtime():
-    """Load only this account's verified runtime; do not download or change it."""
+def prepared_runtime():
+    """Validate the account-owned environment before executing any of its code."""
     root = runtime_root()
     if not root.exists():
-        return
+        return None
     # Verify every directory before importing executable code (also on admin calls).
     prepare_root()
     path = runtime_dir()
     if not path.exists():
-        return
+        return None
     _trusted_directory(path)
     marker = path / "ready.json"
     if not marker.is_file() or marker.is_symlink():
-        return
-    import site
+        return None
     packages = path / ("Lib/site-packages" if os.name == "nt" else "lib/python%d.%d/site-packages" % sys.version_info[:2])
     _trusted_directory(packages)
-    # pip --isolated installs into this private tree. Prefer it over system drivers.
-    sys.path.insert(0, str(packages))
-    importlib.invalidate_caches()
+    config = path / "pyvenv.cfg"
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    if config.is_symlink():
+        raise DependencyMissing("The database runtime configuration is unsafe. Prepare drivers again.")
+    fd = os.open(config, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or (os.name == "posix" and (info.st_uid != os.geteuid() or info.st_mode & 0o022)):
+            raise DependencyMissing("The database runtime configuration is unsafe. Prepare drivers again.")
+        data = os.read(fd, 4097)
+    finally:
+        os.close(fd)
+    options = dict(line.split("=", 1) for line in data.decode("utf-8").splitlines() if "=" in line)
+    options = {key.strip().lower(): value.strip().lower() for key, value in options.items()}
+    if len(data) > 4096 or options.get("include-system-site-packages") != "false":
+        raise DependencyMissing("The database runtime must exclude system packages. Prepare drivers again.")
+    if not runtime_python(path).is_file():
+        raise DependencyMissing("The database runtime interpreter is missing. Prepare drivers again.")
+    return path
+
+
+def using_runtime(path):
+    return bool(sys.flags.isolated and sys.prefix != sys.base_prefix and Path(sys.prefix).resolve() == path.resolve())
+
+
+def activate_runtime():
+    """Re-execute in a coherent venv, without mixing optional system packages."""
+    path = prepared_runtime()
+    if path is None or using_runtime(path):
+        return
+    plugin = Path(__file__).resolve().parent
+    # -I omits the script directory. Add only the trusted signed plugin folder,
+    # preserve argv (including an unconsumed private @file payload), and never
+    # execute a shell. Running this before payload parsing prevents double reads.
+    bootstrap = "import sys,runpy; sys.dont_write_bytecode=True; plugin=sys.argv.pop(1); sys.path.insert(0,plugin); script=sys.argv[1]; sys.argv=sys.argv[1:]; runpy.run_path(script,run_name='__main__')"
+    python = str(runtime_python(path))
+    os.execve(python, [python, "-I", "-c", bootstrap, str(plugin), str(plugin / "db-bridge.py"), *sys.argv[1:]], os.environ.copy())
 
 
 def require_driver(name):
@@ -90,9 +123,10 @@ def require_driver(name):
 
 
 def status():
-    activate_runtime()
     drivers = {name: importlib.util.find_spec(name) is not None for name in ("pymysql", "psycopg2", "cryptography", "pymongo", "redis")}
-    return {"ready": all(drivers.values()), "drivers": drivers, "python": "%d.%d.%d" % sys.version_info[:3], "isolated": (runtime_dir() / "ready.json").is_file()}
+    path = prepared_runtime()
+    isolated = path is not None and using_runtime(path)
+    return {"ready": all(drivers.values()) and isolated, "drivers": drivers, "python": "%d.%d.%d" % sys.version_info[:3], "isolated": isolated}
 
 
 @contextlib.contextmanager
@@ -155,9 +189,8 @@ def install(home=None, runner=subprocess.run, builder=None):
                 if previous.exists():
                     previous.rename(target)
                 raise
-            packages = target / ("Lib/site-packages" if os.name == "nt" else "lib/python%d.%d/site-packages" % sys.version_info[:2])
             try:
-                verify = runner([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import pymysql, psycopg2, cryptography, pymongo, redis; print('ready')", str(packages)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15, env=env)
+                verify = runner([str(runtime_python(target)), "-I", "-c", "import sys; assert sys.flags.isolated and sys.prefix != sys.base_prefix; import pymysql, psycopg2, cryptography, pymongo, redis; print('ready')"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15, env=env)
                 if verify.returncode:
                     raise RuntimeError("Database driver activation failed; changes were rolled back.")
             except BaseException:
