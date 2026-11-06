@@ -2574,7 +2574,7 @@ def run_nosql(action: str, instance: Dict[str, Any], params: Dict[str, Any]) -> 
 PAYLOAD_NAME_RE = re.compile(r"^[a-z0-9-]{8,64}$")
 PAYLOAD_SUBDIR = ".config/ervisio/plugins/database/tmp"
 
-def read_payload_file(name: str) -> str:
+def read_payload_file(name: str, consume: bool = True) -> str:
     """Large or secret payloads are written by the UI (sdk.files) to ~/.config/ervisio/plugins/database/tmp/<name>.json
     of the signed-in user. The bridge may run as that user or as root through sudo, so look in both homes.
     The file is removed once read."""
@@ -2598,10 +2598,11 @@ def read_payload_file(name: str) -> str:
         if os.path.isfile(path):
             with open(path, "r", encoding="utf-8") as fh:
                 data = fh.read()
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            if consume:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
             return data
     raise RuntimeError("payload file not found")
 
@@ -2614,7 +2615,7 @@ def main():
     params = {}
     if raw_payload.startswith("@file:"):
         try:
-            params = json.loads(read_payload_file(raw_payload[len("@file:"):]))
+            params = json.loads(read_payload_file(raw_payload[len("@file:"):], consume=False))
         except Exception as e:
             send_error(f"Invalid payload file: {e}")
     elif raw_payload:
@@ -2629,7 +2630,7 @@ def main():
                 send_error(f"Invalid payload encoding: {e}")
 
     instance = params.get("instance", {})
-    if action not in ("runtime-prepare", "runtime-status", "detect", "open-sqlite", "create-sqlite") and instance.get("engine") != "sqlite":
+    if action not in ("runtime-prepare", "detect", "open-sqlite", "create-sqlite") and instance.get("engine") != "sqlite":
         try:
             activate_runtime()
         except DependencyMissing as e:
@@ -2637,6 +2638,12 @@ def main():
         except Exception as e:
             send_error(str(e))
 
+
+    if raw_payload.startswith("@file:"):
+        try:
+            read_payload_file(raw_payload[len("@file:"):])
+        except Exception as error:
+            send_error(f"Invalid payload file: {error}")
 
     try:
         if action == "runtime-status":

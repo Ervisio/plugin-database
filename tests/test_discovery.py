@@ -7,6 +7,8 @@ import tempfile
 import unittest
 import types
 import sys
+import io
+import contextlib
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('discovery_bridge', Path(__file__).parents[1] / 'db-bridge.py')
@@ -15,6 +17,20 @@ spec.loader.exec_module(bridge)
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_private_payload_survives_runtime_activation_then_is_consumed(self):
+        with tempfile.TemporaryDirectory() as home:
+            directory=Path(home,bridge.PAYLOAD_SUBDIR);directory.mkdir(parents=True)
+            token='a'*32;payload=directory/(token+'.json')
+            payload.write_text(json.dumps({'instance':{'engine':'mysql'},'sql':'SELECT 1'}))
+            activated=[]
+            def activate():
+                self.assertTrue(payload.exists());activated.append(True)
+            with patch.object(bridge.os.path,'expanduser',return_value=home),patch.object(bridge.glob,'glob',return_value=[]),patch.object(bridge,'activate_runtime',side_effect=activate),patch.object(bridge,'action_execute_query',return_value={'rows':[{'n':1}]}),patch.object(bridge.sys,'argv',['db-bridge.py','query','@file:'+token]),contextlib.redirect_stdout(io.StringIO()) as output:
+                with self.assertRaises(SystemExit) as exit:
+                    bridge.main()
+                self.assertEqual(exit.exception.code,0)
+            self.assertTrue(activated);self.assertFalse(payload.exists());self.assertEqual(json.loads(output.getvalue())['rows'][0]['n'],1)
+
     def test_docker_mysql_does_not_connect_to_unrelated_native_socket(self):
         fake=types.ModuleType('pymysql')
         fake.cursors=types.SimpleNamespace(DictCursor=dict)

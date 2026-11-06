@@ -165,13 +165,8 @@ function ensureTmpDir(): Promise<void> {
   if (!tmpReady) {
     const files = getSdk().files;
     tmpReady = (async () => {
-      try {
-        const left = await files.list(TMP_DIR);
-        await Promise.all(left.filter((f) => f.type === 'file').map((f) => files.remove(`${TMP_DIR}/${f.name}`).catch(() => undefined)));
-      } catch {
-        await files.mkdir(CONFIG_DIR).catch(() => undefined);
-        await files.mkdir(TMP_DIR).catch(() => undefined);
-      }
+      await files.mkdir(CONFIG_DIR);
+      await files.mkdir(TMP_DIR);
     })();
   }
   return tmpReady;
@@ -203,7 +198,8 @@ async function encodePayload(payload: unknown): Promise<string> {
 
 export async function callBridge<T>(action: string, payload: any = {}): Promise<T> {
   const sdk = getSdk();
-  const res = await sdk.api.exec('db-bridge', [action, await encodePayload(payload)]);
+  const encoded=await encodePayload(payload);
+  let res;try{res=await sdk.api.exec('db-bridge',[action,encoded]);}finally{if(encoded.startsWith('@file:'))await sdk.files.remove(`${TMP_DIR}/${encoded.slice(6)}.json`).catch(()=>undefined);}
   if(res.truncated)throw new Error(t('The database response is too large. Narrow your query or reduce the page size.'));
 
   if (res.exitCode !== 0 && !res.stdout.trim()) {
