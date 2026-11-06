@@ -5,6 +5,8 @@ Provides unified HeidiSQL-style management for MySQL, MariaDB, PostgreSQL, SQLit
 Communicates via JSON over stdout.
 """
 import sys
+sys.dont_write_bytecode = True
+from db_runtime import DependencyMissing, activate_runtime, require_driver
 import os
 import json
 import base64
@@ -97,6 +99,7 @@ def windows_database_services() -> List[Dict[str, str]]:
 
 # Database connection helpers
 def get_mysql_conn(instance: Dict[str, Any], database: Optional[str] = None):
+    require_driver("pymysql")
     import pymysql
     host = instance.get("host", "127.0.0.1")
     port = int(instance.get("port", 3306))
@@ -130,6 +133,7 @@ def get_mysql_conn(instance: Dict[str, Any], database: Optional[str] = None):
     return pymysql.connect(**kwargs)
 
 def get_postgres_conn(instance: Dict[str, Any], database: Optional[str] = None):
+    require_driver("psycopg2")
     import psycopg2
     from psycopg2.extras import RealDictCursor
     host = instance.get("host", "127.0.0.1")
@@ -1459,6 +1463,7 @@ MONGO_COLL_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}$")
 MONGO_SYSTEM_DBS = ("admin", "local", "config")
 
 def _bson():
+    require_driver("pymongo")
     try:
         from bson import json_util
         return json_util
@@ -1466,6 +1471,7 @@ def _bson():
         raise RuntimeError("The Python package 'pymongo' is missing: pip install pymongo")
 
 def get_mongo_client(instance: Dict[str, Any]):
+    require_driver("pymongo")
     try:
         import pymongo
     except ImportError:
@@ -2096,6 +2102,7 @@ REDIS_SCAN_CAP = 10000
 REDIS_ITEMS_CAP = 500
 
 def get_redis(instance: Dict[str, Any], db: int = 0):
+    require_driver("redis")
     try:
         import redis
     except ImportError:
@@ -2528,6 +2535,13 @@ def main():
     instance = params.get("instance", {})
 
     try:
+        activate_runtime()
+        if action == "runtime-status":
+            from db_runtime import status
+            send_json(status())
+        elif action == "runtime-prepare":
+            from db_runtime import install
+            send_json(install())
         if isinstance(instance, dict) and instance:
             fill_docker_credentials(instance)
             if action not in ("detect", "manage-instance"):
@@ -2576,6 +2590,8 @@ def main():
             send_json(action_toggle_log(instance, params))
         else:
             send_error(f"Unknown action: {action}")
+    except DependencyMissing as e:
+        send_error(str(e), "dependency_missing")
     except Exception as e:
         send_error(str(e))
 

@@ -13,6 +13,12 @@ The plugin provides a complete database workbench inside Ervisio's sandboxed UI 
 In Ervisio, open **Plugins › Browse › Databases › Install** (the marketplace package is signed by the Ervisio team).
 The dialog lists the permissions below; updates appear in **Plugins › Updates**.
 
+### Prepare database drivers
+
+Open **Databases → Prepare drivers** to prepare PostgreSQL, MySQL/MariaDB, MongoDB and Redis/Valkey drivers. This explicit action installs SHA-256 pinned binary wheels from PyPI into a private Python runtime for the account executing the command. It does not change system Python, install database servers or sign in anywhere. SQLite uses the standard library and works without additional drivers.
+
+Python 3.10+ with `venv`/`ensurepip` is required. On Debian/Ubuntu, install the matching distro `python3-venv` package if it is missing. The runtime lives under the account's `.local/share/ervisio/database-runtime/python-X.Y`; a Docker-group member and an administrator use separate runtimes. Windows resolves the profile from the executing process token and refuses reparse points or directories writable by other accounts. Runtime setup uses only public package URLs, keeps API keys out of the pip environment, checks imports before and after activation, and preserves the previous runtime on failure. Opening pages and running queries never initiate dependency downloads.
+
 ## What it does
 
 * **Instances & Engine Deployment (Zero Terminal Steps)**:
@@ -57,7 +63,7 @@ The plugin lives in `%ProgramData%\Ervisio\data\plugins\database`. On Windows:
 * **Docker**: Docker Desktop or Docker Engine (`docker.exe` on the `PATH`).
 * **Native**: MariaDB, MySQL, PostgreSQL, MongoDB and Redis (Memurai) registered as Windows services are detected and started, stopped and restarted from the card view; installation uses `winget`.
 * **Administrator rights**: operations that install or control services need the administrator unlock in Ervisio (members of `docker-users` run Docker commands as themselves).
-* The Python packages `pymysql`, `psycopg2`, `pymongo` and `redis` must be installed for that Python (`pip install pymysql psycopg2-binary pymongo redis`); each one is needed only for its engine, SQLite needs nothing.
+* Use **Prepare drivers** for isolated `pymysql`, `psycopg2`, `pymongo` and `redis` support. Existing system-installed drivers remain usable; no global pip installation is needed. SQLite needs no external driver.
 
 ## Permissions
 
