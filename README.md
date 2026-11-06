@@ -15,7 +15,7 @@ The dialog lists the permissions below; updates appear in **Plugins › Updates*
 
 ### Prepare database drivers
 
-Open **Databases → Prepare drivers** to prepare PostgreSQL, MySQL/MariaDB, MongoDB and Redis/Valkey drivers. This explicit action installs SHA-256 pinned binary wheels from PyPI into a private Python runtime for the account executing the command. It does not change system Python, install database servers or sign in anywhere. SQLite uses the standard library and works without additional drivers.
+Open **Databases → Settings → Prepare drivers** to prepare PostgreSQL, MySQL/MariaDB, MongoDB and Redis/Valkey drivers. This explicit action installs SHA-256 pinned binary wheels from PyPI into a private Python runtime for the account executing the command. It does not change system Python, install database servers or sign in anywhere. SQLite uses the standard library and works without additional drivers.
 
 Python 3.10+ with `venv`/`ensurepip` is required. On Debian/Ubuntu, install the matching distro `python3-venv` package if it is missing. The runtime lives under the account's `.local/share/ervisio/database-runtime/python-X.Y`; Linux root and regular users have separate runtimes. Windows linked UAC elevation of the same OS account uses the same profile and runtime. Windows resolves the profile from the executing process token and refuses reparse points or directories writable by other accounts. Runtime setup uses only public package URLs, keeps API keys out of the pip environment, checks imports before and after activation, and preserves the previous runtime on failure. Actions re-execute in this verified interpreter with system site-packages disabled; private drivers are never mixed with optional system Python packages. Opening pages and running queries never initiate dependency downloads.
 
@@ -27,14 +27,14 @@ On Linux, preparation creates the runtime with private permissions even when the
   * **🐳 Docker Containers**: 1-click deployment for MySQL (8.4-LTS, 8.0, 9.0, 5.7), MariaDB (11.4-LTS, 11.2, 10.11-LTS, 10.6), PostgreSQL (17, 16, 15, 14), MongoDB (8.0, 7.0, 6.0), Redis (7.4, 7.2, 6.2) and Valkey (8.1, 8.0, 7.2) with custom ports, container names, and persistent volumes. Existing containers are detected from their image (`mongo`, `bitnami/mongodb`, `redis`, `redis-stack`, `valkey/valkey`, `keydb`, ...) and their password is read from the container configuration, so they open without asking for credentials.
   * **🖥️ Native Services**: 1-click installation via APT (`mariadb-server`, `mysql-server`, `postgresql`, `redis-server`, `valkey-server`, `sqlite3`, and `mongodb-org` from the official MongoDB repository) or winget on Windows (`MongoDB.Server`, `Memurai.MemuraiDeveloper` for Redis). Systemd units and Windows services of every supported engine are detected and can be started, stopped and restarted from the card view.
   * **🔌 Local ports**: engines listening on their default port (3306, 5432, 27017, 6379) that no service manager or Docker reports (started by hand, portable builds) are listed too.
-  * **📁 SQLite Files**: Instant creation of `.sqlite` / `.db` database files anywhere on the filesystem, plus auto-discovery of existing SQLite databases in `/home` and `/var/lib`.
+  * **📁 SQLite Files**: Instant creation of `.sqlite` / `.db` database files anywhere on the filesystem, plus explicit, bounded search in a chosen folder; no automatic filesystem scans.
   * **🔗 Remote & Custom Connections**: Connect to any external or pre-existing MySQL, PostgreSQL, MongoDB or Redis host.
   * **Lifecycle Management**: Start, stop, and restart database containers or native services directly from the card view.
 * **NoSQL engines** use the same workbench:
   * **MongoDB**: databases and collections in the tree, documents in the grid (top-level fields as columns, `_id` as key, nested values as JSON), quick search, per-field filters and a JSON filter, inline editing that keeps the field types, inferred schema and indexes in Structure, mongosh-style queries (`db.users.find({ age: { $gt: 30 } }).sort({ age: -1 })`, `aggregate`, `insertOne`, `updateMany`, `createIndex`, `runCommand`, `show collections`, ...), users and roles, and the database profiler as slow log.
   * **Redis / Valkey / KeyDB**: numbered databases, key patterns (`*` and the common prefixes such as `user:*`) as tables, keys as rows with type, TTL and value (hash, list, set, zset as JSON), edit values, TTL and key names inline, one command per line in the Query tab, ACL users and `SLOWLOG`.
 * **HeidiSQL-Grade Schema Explorer**:
-  * Visual tree of databases, tables, and views with size metrics and row counts.
+  * Lazy-loaded tree of databases, tables and views; schema browsing avoids full table counts.
   * Create, alter, and drop databases with charset and collation options.
   * Create and drop tables; view complete column schemas (types, keys, nullability, defaults) and indexes.
 * **Visual Data Grid & Editor**:
@@ -148,15 +148,22 @@ silently presenting an empty result. Detection does not bypass database login.
 Connection settings provide TLS certificate verification, an optional CA file,
 and MongoDB's authentication database.
 
-SQLite discovery verifies file headers rather than assuming every `.db` file is
-SQLite. It searches common server locations with a three-second / 25,000-entry /
-250-result budget, skips directory symlinks and noisy cache/dependency folders,
-and reports when the budget is reached. Add up to twelve scan folders using the
-shared chooser to search your own application locations. These choices replace
-the default roots. Use **Open SQLite** to select an existing file anywhere the
-bridge account can access without relying on discovery. Network files must be
-available as actual server filesystem paths; a saved SFTP address is not a local
-SQLite filesystem.
+SQLite search runs only when you choose **Find SQLite in a folder** and select
+one folder. Opening the plugin, refreshing the server inventory and typing a
+filter never scan files. Each explicit search checks known SQLite filename
+extensions and verifies their headers, with a 250 ms / 2,000-entry / 50-result /
+three-level traversal budget. It skips symlinks, caches and dependency folders,
+and yields briefly during traversal. Slow filesystem operations can exceed the
+elapsed budget before returning control. Use **Open SQLite** to choose an existing
+file directly, including filenames without a known extension. Network files must
+be accessible as server filesystem paths.
+
+Connection cards are paginated (24 per page). Schema nodes load only when you
+expand a database and appear in batches of 100. Filtering searches names and
+already loaded tables without querying every database. Bridge requests run one
+at a time per plugin frame, with at most eight queued requests. Schema listing
+does not execute full SQLite table counts or MongoDB collection statistics.
+Explicit queries and browsing a selected table can still require database work.
 
 Opening a missing database reports an error and never creates a replacement.
 Creation is a separate action and refuses existing files. Existing databases

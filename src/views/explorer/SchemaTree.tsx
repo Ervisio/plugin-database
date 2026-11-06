@@ -1,9 +1,9 @@
-import { useEffect, useState, type KeyboardEvent, type MouseEvent } from 'react';
+import { useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { databasesCache, dbApi, invalidateInstance, isSystemDb, tablesCache, type DbInstance, type TableInfo } from '../../api';
 import { openTable, patchExplorer, toggleExpanded, useExplorer } from '../../explorerState';
 import { useSettings } from '../../settings';
 import { t } from '../../i18n';
-import { ConfirmDialog, Icon, IconButton, Menu, toast, type MenuItem } from '../../kit';
+import { Button, ConfirmDialog, Icon, IconButton, Menu, toast, type MenuItem } from '../../kit';
 import { CreateDbDialog } from './dialogs';
 
 type MenuState = { x: number; y: number; items: MenuItem[] } | null;
@@ -18,17 +18,11 @@ export function SchemaTree({ inst, filter }: { inst: DbInstance; filter: string 
   const [settings] = useSettings();
   const [menu, setMenu] = useState<MenuState>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [dropDb, setDropDb] = useState<string | null>(null);
+  const [dropDb, setDropDb] = useState<string | null>(null);const [databaseLimit,setDatabaseLimit]=useState(100);
 
-  // First visit: open the first user database.
-  useEffect(() => {
-    if (st.db || !dbs.data?.length) return;
-    const first = dbs.data.find((d) => !isSystemDb(d.name, inst.engine)) ?? dbs.data[0];
-    patchExplorer(inst.id, (s) => ({ db: first.name, expanded: s.expanded.includes(first.name) ? s.expanded : [...s.expanded, first.name] }));
-  }, [dbs.data, st.db, inst.id]);
 
   const q = filter.trim().toLowerCase();
-  const list = (dbs.data ?? []).filter((d) => settings.showSystemDbs || !isSystemDb(d.name, inst.engine) || d.name === st.db);
+  const list = (dbs.data ?? []).filter((d) => settings.showSystemDbs || !isSystemDb(d.name, inst.engine) || d.name === st.db).filter(d=>!q||d.name.toLowerCase().includes(q)||(tablesCache.peek([inst,d.name])||[]).some(table=>table.name.toLowerCase().includes(q)));
   const canCreate = inst.engine !== 'sqlite' && inst.engine !== 'redis';
 
   const dbMenu = (e: MouseEvent, name: string) => {
@@ -78,7 +72,7 @@ export function SchemaTree({ inst, filter }: { inst: DbInstance; filter: string 
       <div className="db-tree" role="tree" aria-label={t('Databases')} onKeyDown={onKey}>
         {!dbs.data && dbs.loading && <div className="db-tree-empty">{t('Loading…')}</div>}
         {dbs.error && !dbs.data && <div className="db-tree-empty" style={{ color: 'var(--err)' }}>{dbs.error}</div>}
-        {list.map((d) => (
+        {list.slice(0,databaseLimit).map((d) => (
           <DbNode
             key={d.name}
             inst={inst}
@@ -91,6 +85,7 @@ export function SchemaTree({ inst, filter }: { inst: DbInstance; filter: string 
             onMenu={dbMenu}
           />
         ))}
+      {list.length>databaseLimit&&<Button size="sm" onClick={()=>setDatabaseLimit(value=>value+100)}>{t('Show more databases')}</Button>}
       </div>
 
       {menu && <Menu items={menu.items} anchor={{ x: menu.x, y: menu.y }} onClose={() => setMenu(null)} />}
@@ -132,7 +127,8 @@ function DbNode({ inst, name, count, filter, expanded, activeDb, activeTable, on
   activeTable: string;
   onMenu(e: MouseEvent, name: string): void;
 }) {
-  const tables = tablesCache.use(expanded || filter ? [inst, name] : null);
+  const [tableLimit,setTableLimit]=useState(100);
+  const tables = tablesCache.use(expanded ? [inst, name] : null);
   const nameHit = !filter || name.toLowerCase().includes(filter);
   const shown: TableInfo[] = (tables.data ?? []).filter((x) => nameHit || x.name.toLowerCase().includes(filter));
   if (filter && !nameHit && shown.length === 0) return null;
@@ -165,7 +161,7 @@ function DbNode({ inst, name, count, filter, expanded, activeDb, activeTable, on
           {!tables.data && tables.loading && <div className="db-tree-empty">{t('Loading…')}</div>}
           {tables.error && <div className="db-tree-empty" style={{ color: 'var(--err)' }}>{tables.error}</div>}
           {tables.data && shown.length === 0 && <div className="db-tree-empty">{t('No tables')}</div>}
-          {shown.map((x) => {
+          {shown.slice(0,tableLimit).map((x) => {
             const view = /view/i.test(x.type || '');
             return (
               <button
@@ -186,6 +182,7 @@ function DbNode({ inst, name, count, filter, expanded, activeDb, activeTable, on
               </button>
             );
           })}
+          {shown.length>tableLimit&&<Button size="sm" onClick={()=>setTableLimit(value=>value+100)}>{t('Show more tables')}</Button>}
         </>
       )}
     </>

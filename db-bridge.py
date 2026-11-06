@@ -204,50 +204,56 @@ def get_sqlite_conn(path: str):
     return conn
 
 
-def scan_sqlite(roots, max_files=250, max_depth=8, max_entries=25000, seconds=3):
-    """Bounded, header-verified discovery; never follows directory symlinks."""
+def scan_sqlite(roots, max_files=50, max_depth=3, max_entries=2000, seconds=0.25):
+    """Explicit, throttled scan of chosen folders. Never used during startup."""
     found, warnings, seen = [], [], set()
-    started = time.monotonic()
-    scanned = 0
+    started = time.monotonic(); scanned = 0; limited = False
     skipped = {"node_modules", ".git", ".cache", ".venv", "venv", "__pycache__", "proc", "sys", "dev", "overlay2", "overlayfs", "$recycle.bin", "windows"}
-    limited = False
-    for root in roots[:12]:
-        root = sqlite_path(root)
-        if not os.path.isdir(root):
-            continue
-        def inaccessible(error):
-            if len(warnings) < 8:
-                warnings.append({"source": "sqlite", "message": "Some folders could not be read: " + str(error.filename)})
-        for directory, dirs, files in os.walk(root, followlinks=False, onerror=inaccessible):
-            depth = os.path.relpath(directory, root).count(os.sep) + (directory != root)
-            dirs[:] = sorted(d for d in dirs if d.lower() not in skipped and not os.path.islink(os.path.join(directory, d))) if depth < max_depth else []
-            scanned += len(dirs) + len(files) + 1
-            if scanned > max_entries or time.monotonic() - started > seconds:
-                limited = True
-                break
-            for name in sorted(files):
-                if time.monotonic() - started > seconds:
-                    limited = True
-                    break
-                if name.endswith(("-wal", "-shm", "-journal")):
-                    continue
-                candidate = os.path.join(directory, name)
-                if os.path.islink(candidate) or not sqlite_header(candidate):
-                    continue
-                try:
-                    item = sqlite_instance(candidate)
-                except OSError:
-                    continue
-                if item["id"] not in seen:
-                    found.append(item); seen.add(item["id"])
-                if len(found) >= max_files or time.monotonic() - started > seconds:
-                    limited = True
-                    break
-            if limited:
-                break
+    stack = [(sqlite_path(root), 0) for root in reversed(roots[:1])]
+    while stack:
+        directory, depth = stack.pop()
+        if scanned >= max_entries or time.monotonic() - started >= seconds:
+            limited = True; break
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    scanned += 1
+                    if scanned > max_entries or time.monotonic() - started >= seconds:
+                        limited = True; break
+                    if scanned % 50 == 0:
+                        time.sleep(0.001)
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth < max_depth and entry.name.lower() not in skipped:
+                            stack.append((entry.path, depth + 1))
+                        continue
+                    if not entry.name.lower().endswith((".db", ".sqlite", ".sqlite3", ".db3", ".s3db", ".sl3")):
+                        continue
+                    if not entry.is_file(follow_symlinks=False) or not sqlite_header(entry.path):
+                        continue
+                    try:
+                        item = sqlite_instance(entry.path)
+                    except OSError:
+                        continue
+                    if item["id"] not in seen:
+                        found.append(item); seen.add(item["id"])
+                    if len(found) >= max_files:
+                        limited = True; break
+        except OSError:
+            if len(warnings) < 4:
+                warnings.append({"source":"sqlite", "message":"A chosen folder could not be read."})
         if limited:
             break
-    return found, {"roots": roots, "scanned": scanned, "limited": limited, "warnings": warnings}
+    return found, {"roots":roots[:1],"scanned":scanned,"limited":limited,"warnings":warnings}
+
+
+def action_scan_sqlite(params):
+    roots = params.get("roots", [])
+    if not isinstance(roots, list) or len(roots) != 1 or not isinstance(roots[0], str) or not os.path.isabs(roots[0]):
+        raise RuntimeError("Choose one folder to search. No server-wide scan is performed.")
+    files, report = scan_sqlite(roots)
+    return {"sqlite_files":files,"warnings":report["warnings"],"discovery":report}
 
 
 def default_sqlite_roots():
@@ -478,13 +484,9 @@ def action_detect(params=None) -> Dict[str, Any]:
             "version": "local"
         })
 
-    roots = (params or {}).get("roots") or default_sqlite_roots()
-    if not isinstance(roots, list) or len(roots) > 12 or any(not isinstance(p, str) or not os.path.isabs(p) for p in roots):
-        raise RuntimeError("Choose up to 12 absolute SQLite discovery folders.")
-    sqlite_files, scan = scan_sqlite(roots)
-    warnings.extend(scan["warnings"])
-    if scan["limited"]:
-        warnings.append({"source":"sqlite", "message":"Discovery reached its time or size limit. Choose a narrower scan folder or open a SQLite file directly."})
+    # Inventory must never enumerate or open application files automatically.
+    sqlite_files = []
+    scan = {"roots":[],"scanned":0,"limited":False}
 
     return {
         "instances": instances,
@@ -705,12 +707,8 @@ def action_list_databases(instance: Dict[str, Any]) -> Dict[str, Any]:
                     SELECT 
                         s.schema_name as name,
                         s.default_character_set_name as charset,
-                        s.default_collation_name as collation,
-                        COALESCE(SUM(t.data_length + t.index_length), 0) as size_bytes,
-                        COUNT(t.table_name) as tables_count
+                        s.default_collation_name as collation
                     FROM information_schema.schemata s
-                    LEFT JOIN information_schema.tables t ON s.schema_name = t.table_schema
-                    GROUP BY s.schema_name, s.default_character_set_name, s.default_collation_name
                     ORDER BY s.schema_name ASC
                 """)
                 dbs = cur.fetchall()
@@ -725,8 +723,7 @@ def action_list_databases(instance: Dict[str, Any]) -> Dict[str, Any]:
                     SELECT 
                         datname as name,
                         pg_encoding_to_char(encoding) as charset,
-                        datcollate as collation,
-                        pg_database_size(datname) as size_bytes
+                        datcollate as collation
                     FROM pg_database
                     WHERE datistemplate = false
                     ORDER BY datname ASC
@@ -843,18 +840,8 @@ def action_list_tables(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict
             cur = conn.cursor()
             cur.execute("SELECT name, type, sql FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name ASC")
             for row in cur.fetchall():
-                # Count rows
-                rc = 0
-                try:
-                    deadline = time.monotonic() + 0.05
-                    conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
-                    c2 = conn.cursor()
-                    c2.execute("SELECT COUNT(*) FROM " + _quote("sqlite", row["name"]))
-                    rc = c2.fetchone()[0]
-                except Exception:
-                    pass
-                finally:
-                    conn.set_progress_handler(None, 0)
+                # Listing schema must not execute COUNT(*) or evaluate views.
+                rc = None
                 tables.append({
                     "name": row["name"],
                     "type": "BASE TABLE" if row["type"] == "table" else "VIEW",
@@ -1981,15 +1968,8 @@ class MongoDriver:
         self.client.close()
 
     def list_databases(self, params):
-        dbs = []
-        for d in self.client.list_databases():
-            name = d["name"]
-            try:
-                count = len(self.client[name].list_collection_names())
-            except Exception:
-                count = None
-            dbs.append({"name": name, "size_bytes": d.get("sizeOnDisk"), "tables_count": count})
-        return {"databases": sorted(dbs, key=lambda x: x["name"])}
+        # Name-only inventory: no per-database size or collection queries.
+        return {"databases":[{"name":name} for name in sorted(self.client.list_database_names())]}
 
     def create_database(self, params):
         name = str(params.get("name", "")).strip()
@@ -2016,15 +1996,6 @@ class MongoDriver:
             name = c["name"]
             entry = {"name": name, "type": "VIEW" if kind == "view" else kind, "engine": "MongoDB",
                      "rows_count": None, "data_size": 0, "index_size": 0, "collation": "", "comment": ""}
-            if kind != "view":
-                try:
-                    st = db.command("collStats", name)
-                    entry.update(rows_count=st.get("count", 0), data_size=st.get("size", 0), index_size=st.get("totalIndexSize", 0))
-                except Exception:
-                    try:
-                        entry["rows_count"] = db[name].estimated_document_count()
-                    except Exception:
-                        pass
             tables.append(entry)
         return {"tables": sorted(tables, key=lambda x: x["name"]), "database": params.get("database")}
 
@@ -2644,7 +2615,7 @@ def main():
                 send_error(f"Invalid payload encoding: {e}")
 
     instance = params.get("instance", {})
-    if action not in ("runtime-prepare", "detect", "open-sqlite", "create-sqlite") and instance.get("engine") != "sqlite":
+    if action not in ("runtime-prepare", "detect", "open-sqlite", "create-sqlite", "scan-sqlite") and instance.get("engine") != "sqlite":
         try:
             activate_runtime()
         except DependencyMissing as e:
@@ -2680,6 +2651,8 @@ def main():
             send_json(action_install_docker(params))
         elif action == "install-apt":
             send_json(action_install_apt(params))
+        elif action == "scan-sqlite":
+            send_json(action_scan_sqlite(params))
         elif action == "open-sqlite":
             conn = get_sqlite_conn(params.get("path"))
             try:

@@ -44,7 +44,7 @@ export function ExplorerView({ inst }: { inst: DbInstance }) {
 
   const title = st.table && needsTable ? st.table : st.db || inst.name;
   const subtitle = st.table && needsTable
-    ? [st.db, info ? (/view/i.test(info.type) ? t('view') : rowsLabel(info.rows_count ?? 0)) : '', info?.engine].filter(Boolean).join(' · ')
+    ? [st.db, info ? (/view/i.test(info.type) ? t('view') : info.rows_count==null?'':rowsLabel(info.rows_count)) : '', info?.engine].filter(Boolean).join(' · ')
     : st.db
       ? tableCount
       : t('Pick a database in the sidebar');

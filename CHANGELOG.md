@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.2] - 2026-11-06
+
+- Performance hotfix: remove all automatic SQLite filesystem scans and the eager driver check. Search only one explicitly chosen folder, with a 250 ms / 2,000-entry / 50-result budget and throttled traversal. Existing saved files and folders remain available.
+- Load schema tables only when a database is expanded. Filtering never interrogates collapsed databases. Paginate connection cards and reveal database/table nodes in batches.
+- Remove automatic SQLite table/view row counts, per-database size calculations and MongoDB per-collection statistics from schema listings. Serialize bridge requests with a bounded queue.
+
 ## [1.4.1] - 2026-11-06
 
 - Preserve explicitly saved host/port overrides when merging detected connection metadata. Detect PostgreSQL cluster ports through pg_lsclusters and hide its redundant aggregate service.

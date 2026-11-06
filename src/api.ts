@@ -1,5 +1,4 @@
 import { t } from './i18n';
-import { ensureLibrary } from './library';
 import { getSdk } from './sdk';
 import { CONFIG_DIR } from './settings';
 import { createCache, invalidate } from './store';
@@ -44,7 +43,7 @@ export interface TableInfo {
   name: string;
   type: string;
   engine: string;
-  rows_count: number;
+  rows_count: number | null;
   data_size: number;
   index_size: number;
   collation: string;
@@ -196,7 +195,18 @@ async function encodePayload(payload: unknown): Promise<string> {
   return b64;
 }
 
-export async function callBridge<T>(action: string, payload: any = {}): Promise<T> {
+let activeBridge = 0;
+const waitingBridge: (()=>void)[] = [];
+function bridgeSlot():Promise<()=>void>{
+ return new Promise((resolve,reject)=>{
+  const start=()=>{activeBridge++;resolve(()=>{activeBridge--;waitingBridge.shift()?.();});};
+  if(activeBridge<1)start();else if(waitingBridge.length<8)waitingBridge.push(start);else reject(new Error('Too many database requests. Wait for the current operation.'));
+ });
+}
+export async function callBridge<T>(action:string,payload:any={}):Promise<T>{
+ const release=await bridgeSlot();try{return await runBridge<T>(action,payload);}finally{release();}
+}
+async function runBridge<T>(action: string, payload: any = {}): Promise<T> {
   const sdk = getSdk();
   const encoded=await encodePayload(payload);
   let res;try{res=await sdk.api.exec('db-bridge',[action,encoded]);}finally{if(encoded.startsWith('@file:'))await sdk.files.remove(`${TMP_DIR}/${encoded.slice(6)}.json`).catch(()=>undefined);}
@@ -219,7 +229,8 @@ export async function callBridge<T>(action: string, payload: any = {}): Promise<
 export const dbApi = {
   runtimeStatus: () => callBridge<{ ready: boolean; drivers: Record<string, boolean>; python: string; isolated: boolean }>('runtime-status'),
   prepareRuntime: () => callBridge<{ ok: boolean; ready: boolean }>('runtime-prepare'),
-  detect: async () => { const library=await ensureLibrary().catch(()=>null); return callBridge<DetectResult>('detect',library?.roots.length?{roots:library.roots}:{}); },
+  detect: () => callBridge<DetectResult>('detect'),
+  scanSqlite: (root:string) => callBridge<Pick<DetectResult,'sqlite_files'|'warnings'|'discovery'>>('scan-sqlite',{roots:[root]}),
   openSqlite: (path:string) => callBridge<DbInstance>('open-sqlite',{path}),
   installDocker: (p: { engine: string; version: string; name: string; password: string; port: number }) =>
     callBridge<{ ok: boolean; container_id: string }>('install-docker', p),

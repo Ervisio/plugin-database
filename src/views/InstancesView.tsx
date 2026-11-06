@@ -2,12 +2,11 @@ import { LibraryFolders, ConnectionFolder } from '../ui/ConnectionLibrary';
 import { mergeConnections, rememberInstance, updateLibrary, useLibrary } from '../library';
 import { PathInput } from '@ervisio/plugin-sdk/paths';
 import { useEffect, useState, type MouseEvent } from 'react';
-import { Button, ConfirmDialog, Dialog, EmptyState, Icon, IconButton, Input, Select, Skeleton, StatCard, Segmented, toast } from '../kit';
+import { Button, ConfirmDialog, Dialog, EmptyState, Icon, IconButton, Input, Select, Skeleton, Segmented, toast } from '../kit';
 import { dbApi, detectCache, invalidateInstance, type DbInstance } from '../api';
 import { t } from '../i18n';
 import { openExplorer } from '../router';
 import { PageHeader } from '../ui/PageHeader';
-import { RuntimeDrivers } from '../ui/RuntimeDrivers';
 import { engineIcon } from '../ui/icons';
 import { buildConnectionString, copyText } from '../utils';
 import { pushRecent, useFile } from '../settings';
@@ -28,9 +27,10 @@ export function InstancesView({ search }: { search: string }) {
   const all = mergeConnections([...instances,...sqliteFiles],library.value.saved);
   const q = search.trim().toLowerCase();
   const filtered = all.filter(i=>folder==='all'||(folder==='unfiled'?!library.value.placement[i.id]:library.value.placement[i.id]===folder)).filter((i) => !q || [i.name, i.type, i.mode, i.host, String(i.port || ''), i.path || ''].join(' ').toLowerCase().includes(q));
-  const running = all.filter((i) => i.status === 'running').length;
-  const recentList = (folder==='all'?recent.ids.map((id) => filtered.find((i) => i.id === id)).filter(Boolean):[]) as DbInstance[];
-  const rest = filtered.filter((i) => !recentList.some(recent=>recent.id===i.id));
+
+  const [page,setPage]=useState(0);useEffect(()=>setPage(0),[search,folder]);const pageCount=Math.max(1,Math.ceil(filtered.length/24));const activePage=Math.min(page,pageCount-1);const visible=filtered.slice(activePage*24,activePage*24+24);
+  const recentList = (folder==='all'?recent.ids.map((id) => visible.find((i) => i.id === id)).filter(Boolean):[]) as DbInstance[];
+  const rest = visible.filter((i) => !recentList.some(recent=>recent.id===i.id));
 
   const open = (inst: DbInstance) => {
     if(inst.id.startsWith('custom-')&&inst.password===undefined){setConnection(inst);setOpenConnect(true);return;}
@@ -129,21 +129,14 @@ export function InstancesView({ search }: { search: string }) {
         }
       />
 
-      <RuntimeDrivers />
       {det.data?.warnings?.length ? <details className="db-discovery-report"><summary>{t('Discovery report')} · {det.data.warnings.length} {t('warnings')}</summary>{det.data.warnings.map((warning,index)=><p key={index}><b>{warning.source}</b>: {warning.message}</p>)}<p>{t('Detected servers may still require credentials. Discovery does not bypass authentication.')}</p></details>:null}
-      <div className="db-library-layout"><LibraryFolders instances={all} selected={folder} onSelect={setFolder} onRescan={()=>void det.refresh()}/><div className="db-library-content">
+      <div className="db-library-layout"><LibraryFolders instances={all} selected={folder} onSelect={setFolder} onRescan={async root=>{const result=await dbApi.scanSqlite(root);await updateLibrary(value=>({...value,saved:mergeConnections(value.saved,result.sqlite_files)}));toast.info(t('SQLite files found'),String(result.sqlite_files.length));}}/><div className="db-library-content">
       {!det.data && det.loading ? (
         <Skeleton lines={4} />
       ) : det.error && !det.data ? (
         <EmptyState icon="alert" title={t('Detection failed')} text={det.error} action={<Button variant="primary" icon="refresh" onClick={() => void det.refresh()}>{t('Retry')}</Button>} />
       ) : (
         <>
-          <div className="db-stats">
-            <StatCard hue="plg" icon="db-database" label={t('Engines')} value={all.length} />
-            <StatCard hue="plg" icon="play" label={t('Running')} value={running} />
-            <StatCard hue="plg" icon="db-docker" label="Docker" value={instances.filter((i) => i.mode === 'docker').length} />
-            <StatCard hue="plg" icon="db-sqlite" label={t('SQLite files')} value={all.filter(instance=>instance.engine==='sqlite').length} />
-          </div>
 
           {filtered.length === 0 ? (
             <EmptyState
@@ -171,6 +164,7 @@ export function InstancesView({ search }: { search: string }) {
         </>
       )}
 
+      {pageCount>1&&<div className="db-row"><Button disabled={activePage===0} onClick={()=>setPage(activePage-1)}>{t('Previous')}</Button><span>{activePage+1} / {pageCount}</span><Button disabled={activePage+1>=pageCount} onClick={()=>setPage(activePage+1)}>{t('Next')}</Button></div>}
       </div></div>
       <ConfirmDialog
         open={!!pendingDelete}
