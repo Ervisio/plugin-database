@@ -19,6 +19,8 @@ Open **Databases → Prepare drivers** to prepare PostgreSQL, MySQL/MariaDB, Mon
 
 Python 3.10+ with `venv`/`ensurepip` is required. On Debian/Ubuntu, install the matching distro `python3-venv` package if it is missing. The runtime lives under the account's `.local/share/ervisio/database-runtime/python-X.Y`; Linux root and regular users have separate runtimes. Windows linked UAC elevation of the same OS account uses the same profile and runtime. Windows resolves the profile from the executing process token and refuses reparse points or directories writable by other accounts. Runtime setup uses only public package URLs, keeps API keys out of the pip environment, checks imports before and after activation, and preserves the previous runtime on failure. Actions re-execute in this verified interpreter with system site-packages disabled; private drivers are never mixed with optional system Python packages. Opening pages and running queries never initiate dependency downloads.
 
+On Linux, preparation creates the runtime with private permissions even when the session uses a permissive umask. If an older runtime reports unsafe permissions, select **Prepare drivers** again to rebuild it; the same strict checks remain enabled.
+
 ## What it does
 
 * **Instances & Engine Deployment (Zero Terminal Steps)**:

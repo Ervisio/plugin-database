@@ -159,6 +159,33 @@ class RuntimeTests(unittest.TestCase):
                 db_runtime.install(home=home, runner=run, builder=Builder())
             self.assertEqual((target / "ready.json").read_text(), "previous")
 
+    @unittest.skipUnless(__import__('os').name == 'posix', 'POSIX process umask')
+    def test_setup_overrides_permissive_umask_and_restores_it_on_all_exits(self):
+        import os
+        import stat
+        for fail in (False, True):
+            with self.subTest(fail=fail), private_home() as home:
+                previous = os.umask(0o002)
+                try:
+                    def run(argv, **kwargs):
+                        # Models pip-created directories/files in its inherited mask.
+                        packages = Path(argv[0]).parent / 'fixture-packages'
+                        packages.mkdir(exist_ok=True)
+                        (packages / 'driver.py').write_text('fixture')
+                        self.assertEqual(stat.S_IMODE(packages.stat().st_mode), 0o700)
+                        self.assertEqual(stat.S_IMODE((packages / 'driver.py').stat().st_mode), 0o600)
+                        return subprocess.CompletedProcess(argv, int(fail), 'ready', 'fixture unavailable' if fail else '')
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, 'compatible binary wheels'):
+                            db_runtime.install(home=home, runner=run, builder=Builder())
+                    else:
+                        db_runtime.install(home=home, runner=run, builder=Builder())
+                        marker = db_runtime.runtime_dir(home) / 'ready.json'
+                        self.assertEqual(stat.S_IMODE(marker.stat().st_mode), 0o600)
+                    self.assertEqual(os.umask(0o002), 0o002, 'Caller umask must be restored')
+                finally:
+                    os.umask(previous)
+
     @unittest.skipUnless(__import__('os').name == 'posix', 'POSIX symlink/permissions')
     def test_symlink_and_writable_runtime_are_refused(self):
         import os

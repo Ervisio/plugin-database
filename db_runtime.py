@@ -153,13 +153,28 @@ def setup_lock(root):
         os.close(fd)
 
 
+@contextlib.contextmanager
+def private_creation():
+    """The bridge is single-threaded; keep venv/pip output private on POSIX."""
+    if os.name != "posix":
+        yield
+        return
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
 def install(home=None, runner=subprocess.run, builder=None):
     if sys.version_info < (3, 10):
         raise RuntimeError("Database drivers need Python 3.10 or newer.")
     root = prepare_root(home)
     target = runtime_dir(home)
     requirements = Path(__file__).with_name("requirements.lock")
-    with setup_lock(root):
+    # EnvBuilder and pip otherwise inherit e.g. an SSH umask of 0002 and
+    # produce group-writable metadata rejected by prepared_runtime().
+    with private_creation(), setup_lock(root):
         stage = Path(tempfile.mkdtemp(prefix=".prepare-", dir=root))
         try:
             if builder is None:
