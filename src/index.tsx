@@ -1,3 +1,4 @@
+import { ExportDestinationHost } from './ui/ExportDestination';
 import { createElement, useEffect } from 'react';
 import { setReact } from '@ervisio/plugin-sdk/react';
 import { setSdk, type PluginSDK } from './sdk';
@@ -91,7 +92,7 @@ function Shell() {
 
   return (
     <div className="db-root hue-plg">
-      <div className="db-shell">
+      <ExportDestinationHost /><div className="db-shell">
         {inst ? <ExplorerNav inst={inst} filter={q} /> : <MainNav section={sectionOf(route)} />}
         <div className="db-main">
           {route.view !== 'activity' && (

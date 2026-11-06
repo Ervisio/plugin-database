@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.0] - 2026-11-06
+
+- Add shared SQLite file selection and export destinations: browser download, local folder, SFTP/SMB, HTTP, ErvisioDrive, ErvisioRepo and S3. Optional account-private destination settings; exports never delete old files.
+
+
 All notable changes to the Ervisio Database Plugin will be documented in this file.
 
 ## 1.2.5 - 2026-11-06

@@ -1,3 +1,4 @@
+import { exportFile } from '../../ui/ExportDestination';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SQLNamespace } from '@codemirror/lang-sql';
 import { databasesCache, dbApi, invalidateInstance, isNoSql, structureCache, tablesCache, type DbInstance, type QueryResult } from '../../api';
@@ -176,7 +177,8 @@ export function QueryTab({ inst, db, table, onDbChange }: { inst: DbInstance; db
     if (!r || !r.rows.length) return;
     const body = fmt === 'csv' ? toCsv(r.columns, r.rows) : fmt === 'json' ? toJson(r.columns, r.rows) : toInsert(inst.engine, table || 'result', r.columns, r.rows);
     try {
-      await getSdk().saveFile(`query.${fmt}`, body, fmt === 'csv' ? 'text/csv' : fmt === 'json' ? 'application/json' : 'application/sql');
+      const exported=await exportFile(`query.${fmt}`, body, fmt === 'csv' ? 'text/csv' : fmt === 'json' ? 'application/json' : 'application/sql');
+      if(!exported)return;
       toast.ok(t('Exported'), t('{n} rows', { n: r.rows.length }));
     } catch (err: any) {
       toast.err(t('Export failed'), err.message);

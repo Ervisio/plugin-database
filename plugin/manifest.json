@@ -1,13 +1,13 @@
 {
   "id": "database",
   "name": "Databases",
-  "version": "1.2.5",
+  "version": "1.3.0",
   "author": "Ervisio Community",
   "description": "HeidiSQL-style database manager for MySQL, MariaDB, PostgreSQL, SQLite, MongoDB and Redis/Valkey: schema tree, editable data grid with live search and filters, query editor with autocomplete, users and slow query log.",
   "homepage": "https://github.com/Ervisio",
   "icon": "database",
   "entry": "index.js",
-  "minCore": "0.6.2",
+  "minCore": "7.0.4",
   "platforms": [
     "linux",
     "windows"
@@ -82,6 +82,52 @@
         "platforms": [
           "windows"
         ]
+      },
+      {
+        "name": "db-export-status",
+        "description": "Account-owned database export status",
+        "argv": [
+          "/usr/bin/ervisiod",
+          "--backup",
+          "status"
+        ],
+        "timeoutSec": 30,
+        "platforms": [
+          "linux"
+        ]
+      },
+      {
+        "name": "db-export-remotes",
+        "description": "Account-owned database export remotes",
+        "argv": [
+          "/usr/bin/ervisiod",
+          "--backup",
+          "remotes"
+        ],
+        "timeoutSec": 30,
+        "platforms": [
+          "linux"
+        ]
+      },
+      {
+        "name": "db-export-deliver",
+        "description": "Account-owned database export deliver",
+        "argv": [
+          "/usr/bin/ervisiod",
+          "--backup",
+          "deliver",
+          "{0}"
+        ],
+        "timeoutSec": 600,
+        "platforms": [
+          "linux"
+        ],
+        "args": [
+          {
+            "pattern": "^[a-f0-9]{32}$",
+            "maxLen": 32
+          }
+        ]
       }
     ],
     "files": {
@@ -89,6 +135,10 @@
         {
           "create": true,
           "path": "~/.config/ervisio/plugins/database"
+        },
+        {
+          "create": true,
+          "path": "~/.config/ervisio/plugins/backup/inbox"
         }
       ]
     }

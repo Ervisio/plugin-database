@@ -1,3 +1,4 @@
+import { exportFile } from '../../ui/ExportDestination';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as RMouseEvent } from 'react';
 import {
   browseCache, dbApi, invalidateInstance, invalidateTableData, isNoSql,
@@ -266,7 +267,8 @@ export function DataGrid({ inst, db, table }: { inst: DbInstance; db: string; ta
     const body = fmt === 'csv' ? toCsv(cols, which) : fmt === 'json' ? toJson(cols, which) : toInsert(inst.engine, table, cols, which);
     const mime = fmt === 'csv' ? 'text/csv' : fmt === 'json' ? 'application/json' : 'application/sql';
     try {
-      await getSdk().saveFile(`${table}.${fmt}`, body, mime);
+      const exported=await exportFile(`${table}.${fmt}`, body, mime);
+      if(!exported)return;
       toast.ok(t('Exported'), t('{n} rows', { n: which.length }));
     } catch (err: any) {
       toast.err(t('Export failed'), err.message);
