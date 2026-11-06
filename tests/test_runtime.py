@@ -10,7 +10,7 @@ from unittest.mock import patch
 import db_runtime
 
 @contextmanager
-def private_home():
+def private_home(owner_rights=False):
     # Only this disposable fixture's ACL is changed. Production guards stay strict.
     with tempfile.TemporaryDirectory() as folder:
         if __import__('os').name == 'nt':
@@ -24,7 +24,8 @@ def private_home():
             advapi.SetNamedSecurityInfoW.argtypes = [wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD, pointer, pointer, pointer, pointer]
             advapi.SetNamedSecurityInfoW.restype = wintypes.DWORD
             descriptor, dacl = pointer(), pointer()
-            sddl = 'D:P(A;OICI;FA;;;' + identity()[1] + ')(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+            principal = 'OW' if owner_rights else identity()[1]
+            sddl = 'D:P(A;OICI;FA;;;' + principal + ')(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
             if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
                 raise ctypes.WinError(ctypes.get_last_error())
             try:
@@ -47,6 +48,15 @@ class Builder:
 
 
 class RuntimeTests(unittest.TestCase):
+    @unittest.skipUnless(__import__('os').name == 'nt', 'Windows OWNER RIGHTS')
+    def test_windows_python_owner_rights_only_trusts_verified_owner(self):
+        with private_home(owner_rights=True) as folder:
+            db_runtime._trusted_directory(Path(folder))
+            db_runtime.prepare_root(folder)
+            result = subprocess.run(['icacls.exe', folder, '/grant', '*S-1-1-0:(OI)(CI)F'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(result.returncode, 0)
+            with self.assertRaisesRegex(RuntimeError, 'another Windows account'):
+                db_runtime._trusted_directory(Path(folder))
     def test_read_only_helper_import_does_not_require_venv(self):
         real_import = builtins.__import__
         def without_venv(name, *args, **kwargs):

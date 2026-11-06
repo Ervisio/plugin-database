@@ -65,6 +65,9 @@ def trusted_directory(path):
         allowed = {identity()[1], "S-1-5-18", "S-1-5-32-544"}
         if not owner.value or sid_text(owner) not in allowed or not dacl.value:
             raise RuntimeError("Database runtime directory has an unsafe Windows owner or access list.")
+        # Python 3.12+ mkdir(0700) grants OW (OWNER RIGHTS). It refers only to
+        # the object's owner, already verified above, never another principal.
+        writers = allowed | {"S-1-3-4"}
         count = ctypes.c_ushort.from_address(dacl.value + 4).value
         for index in range(count):
             ace = pointer()
@@ -77,7 +80,7 @@ def trusted_directory(path):
             mask = ctypes.c_uint32.from_address(ace.value + 4).value
             if not mask & 0x500D0156:
                 continue
-            if ace_type != 0 or sid_text(pointer(ace.value + 8)) not in allowed:
+            if ace_type != 0 or sid_text(pointer(ace.value + 8)) not in writers:
                 raise RuntimeError("Database runtime directory can be written by another Windows account.")
     finally:
         kernel.LocalFree(descriptor)
