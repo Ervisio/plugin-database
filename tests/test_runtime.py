@@ -14,10 +14,28 @@ def private_home():
     # Only this disposable fixture's ACL is changed. Production guards stay strict.
     with tempfile.TemporaryDirectory() as folder:
         if __import__('os').name == 'nt':
-            from db_runtime_windows import identity
-            result = subprocess.run(['icacls.exe', folder, '/inheritance:r', '/grant:r', '*' + identity()[1] + ':(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if result.returncode:
-                raise RuntimeError('Cannot make the disposable fixture private')
+            import ctypes
+            from ctypes import wintypes
+            from db_runtime_windows import advapi, kernel, identity, pointer
+            # Replace explicit as well as inherited ACEs (GitHub's Python 3.12
+            # temp directory can already have explicit non-owner grants).
+            advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(pointer), ctypes.POINTER(wintypes.DWORD)]
+            advapi.GetSecurityDescriptorDacl.argtypes = [pointer, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(pointer), ctypes.POINTER(wintypes.BOOL)]
+            advapi.SetNamedSecurityInfoW.argtypes = [wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD, pointer, pointer, pointer, pointer]
+            advapi.SetNamedSecurityInfoW.restype = wintypes.DWORD
+            descriptor, dacl = pointer(), pointer()
+            sddl = 'D:P(A;OICI;FA;;;' + identity()[1] + ')(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+            if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+                if not advapi.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)) or not present:
+                    raise RuntimeError('Fixture DACL is absent')
+                result = advapi.SetNamedSecurityInfoW(folder, 1, 0x80000004, None, None, dacl, None)
+                if result:
+                    raise ctypes.WinError(result)
+            finally:
+                kernel.LocalFree(descriptor)
         yield folder
 
 
