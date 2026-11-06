@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,7 @@ def main():
     if managed.exists():
         raise RuntimeError('Refusing to replace a pre-existing account runtime.')
     payload = None
+    previous_umask = os.umask(0o002)
     try:
         with tempfile.TemporaryDirectory(prefix='database-isolation-', dir=os.environ['RUNNER_TEMP']) as folder:
             folder = Path(folder)
@@ -50,8 +52,26 @@ def main():
             helper = PLUGIN / 'db-bridge.py'
             prepared = json.loads(run([python, helper, 'runtime-prepare']).stdout)
             assert prepared['ok'] and prepared['ready'], prepared
+            target = db_runtime.runtime_dir()
+            assert stat.S_IMODE((target / 'pyvenv.cfg').stat().st_mode) == 0o600
+            for entry in target.rglob('*'):
+                if not entry.is_symlink():
+                    assert not entry.stat().st_mode & 0o022, 'Runtime must not be group/world writable: ' + str(entry)
             status = json.loads(run([python, helper, 'runtime-status']).stdout)
             assert status['ready'] and status['isolated'] and all(status['drivers'].values()), status
+            # Existing 1.2.4 runtimes created under umask 0002 must remain
+            # rejected, yet the explicit preparation action must repair them.
+            packages = target / ('lib/python%d.%d/site-packages' % sys.version_info[:2])
+            packages.chmod(0o775)
+            (target / 'pyvenv.cfg').chmod(0o664)
+            rejected = run([python, helper, 'runtime-status'], ok=False)
+            assert rejected.returncode != 0 and 'unsafe owner or permissions' in rejected.stdout, rejected.stdout
+            repaired = json.loads(run([python, helper, 'runtime-prepare']).stdout)
+            assert repaired['ok'] and repaired['ready'], repaired
+            status = json.loads(run([python, helper, 'runtime-status']).stdout)
+            assert status['ready'] and status['isolated'] and all(status['drivers'].values()), status
+            assert stat.S_IMODE((target / 'pyvenv.cfg').stat().st_mode) == 0o600
+            assert stat.S_IMODE(packages.stat().st_mode) == 0o700
             # The original interpreter's optional globals remain unchanged.
             assert run([python, '-I', '-c', 'import OpenSSL'], ok=False).returncode != 0
             database = folder / 'actual.sqlite'
@@ -69,8 +89,9 @@ def main():
             assert query['rows'][0]['message'] == 'coherent-runtime', query
             assert not payload.exists(), 'Payload must be consumed exactly once, after re-exec'
             assert not list((PLUGIN / '__pycache__').glob('db_runtime*.pyc')), 'Signed helper files must not receive bytecode'
-            print('Real pinned install, coherent helper status and private-payload SQLite query passed with broken global OpenSSL/service_identity.')
+            print('Real pinned install under umask 0002, unsafe-runtime repair, coherent helper status and private-payload SQLite query passed with broken global OpenSSL/service_identity.')
     finally:
+        os.umask(previous_umask)
         if payload is not None and payload.exists():
             payload.unlink()
         # This exact runtime did not exist before this fresh CI test.

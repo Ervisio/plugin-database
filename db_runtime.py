@@ -153,25 +153,67 @@ def setup_lock(root):
         os.close(fd)
 
 
+@contextlib.contextmanager
+def private_creation():
+    """The bridge is single-threaded; keep venv/pip output private on POSIX."""
+    if os.name != "posix":
+        yield
+        return
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def private_tree(root):
+    """Tighten only freshly staged files; copied template modes ignore umask."""
+    if os.name != "posix":
+        return
+    for directory, directories, files in os.walk(root, followlinks=False):
+        for path in [Path(directory), *(Path(directory) / name for name in directories + files)]:
+            info = path.lstat()
+            # venv may link its interpreter or lib64. Never modify link targets.
+            if stat.S_ISLNK(info.st_mode):
+                continue
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise RuntimeError("Unexpected file in the staged database runtime.")
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            if stat.S_ISDIR(info.st_mode):
+                flags |= getattr(os, "O_DIRECTORY", 0)
+            fd = os.open(path, flags)
+            try:
+                pinned = os.fstat(fd)
+                if pinned.st_uid != os.geteuid() or not (stat.S_ISDIR(pinned.st_mode) or stat.S_ISREG(pinned.st_mode)):
+                    raise RuntimeError("Unsafe owner or file type in the staged database runtime.")
+                os.fchmod(fd, stat.S_IMODE(pinned.st_mode) & 0o700)
+            finally:
+                os.close(fd)
+
+
 def install(home=None, runner=subprocess.run, builder=None):
     if sys.version_info < (3, 10):
         raise RuntimeError("Database drivers need Python 3.10 or newer.")
     root = prepare_root(home)
     target = runtime_dir(home)
     requirements = Path(__file__).with_name("requirements.lock")
-    with setup_lock(root):
+    # EnvBuilder and pip otherwise inherit e.g. an SSH umask of 0002 and
+    # produce group-writable metadata rejected by prepared_runtime().
+    with private_creation(), setup_lock(root):
         stage = Path(tempfile.mkdtemp(prefix=".prepare-", dir=root))
         try:
             if builder is None:
                 import venv
                 builder = venv.EnvBuilder(with_pip=True)
             builder.create(stage)
+            private_tree(stage)
             python = runtime_python(stage)
             allowed_env = {"HOME", "PATH", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "SYSTEMDRIVE", "PROGRAMDATA", "PROGRAMFILES", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}
             env = {key: value for key, value in os.environ.items() if key.upper() in allowed_env}
             result = runner([str(python), "-I", "-m", "pip", "--isolated", "install", "--disable-pip-version-check", "--no-input", "--no-cache-dir", "--only-binary=:all:", "--require-hashes", "--index-url", "https://pypi.org/simple", "-r", str(requirements)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=240, env=env)
             if result.returncode:
                 raise RuntimeError("Could not prepare isolated database drivers. Python venv/pip and compatible binary wheels are required. " + (result.stderr or result.stdout)[-1600:])
+            private_tree(stage)
             check = runner([str(python), "-I", "-c", "import pymysql, psycopg2, cryptography, pymongo, redis; print('ready')"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15, env=env)
             if check.returncode:
                 raise RuntimeError("Database driver verification failed; previous runtime was preserved.")

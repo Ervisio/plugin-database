@@ -2,6 +2,11 @@
 
 All notable changes to the Ervisio Database Plugin will be documented in this file.
 
+## 1.2.5 - 2026-11-06
+
+- Prepare the private POSIX driver runtime with umask 0077, including venv metadata, pip output and the readiness marker. Tighten copied template modes in the fresh stage without following symlinks; preserve owner executable permissions. Restore the caller's umask on success and failure; keep ownership and writable-directory checks strict.
+- Repair previously prepared runtimes through the existing Prepare drivers action. A real Linux regression runs with SSH-style umask 0002, verifies private permissions, rejects an unsafe old runtime, then prepares it again and checks isolated status and a private-payload SQLite query.
+
 ## 1.2.4 - 2026-11-06
 
 - Run database actions in the verified account-owned virtual environment instead of injecting private drivers into system Python. Old optional system OpenSSL/service_identity packages no longer conflict with the private MongoDB/cryptography drivers.
