@@ -104,6 +104,33 @@ class RuntimeTests(unittest.TestCase):
                 self.assertIn('SYSTEMDRIVE', {key.upper() for key in options['env']})
             self.assertNotIn("shell", options)
             self.assertEqual(len(calls), 3)
+            self.assertEqual(calls[-1][0][0], str(db_runtime.runtime_python(db_runtime.runtime_dir(home))))
+            self.assertIn('-I', calls[-1][0])
+            self.assertNotIn('sys.path.insert', calls[-1][0][-1])
+
+    def test_runtime_reexec_preserves_private_payload_before_consumption(self):
+        with private_home() as home, patch('db_runtime.account_home', return_value=Path(home)):
+            root = db_runtime.prepare_root()
+            target = db_runtime.runtime_dir()
+            target.mkdir(mode=0o700)
+            (target / 'ready.json').write_text('{}')
+            (target / 'pyvenv.cfg').write_text('include-system-site-packages = false\n')
+            packages = target / ('Lib/site-packages' if __import__('os').name == 'nt' else 'lib/python%d.%d/site-packages' % __import__('sys').version_info[:2])
+            packages.mkdir(parents=True, mode=0o700)
+            python = db_runtime.runtime_python(target)
+            python.parent.mkdir(exist_ok=True)
+            python.write_text('fixture')
+            payload = '@file:' + 'a' * 32
+            with patch('sys.argv', ['db-bridge.py', 'query', payload]), patch('db_runtime.os.execve', side_effect=RuntimeError('intercepted exec')) as execute:
+                with self.assertRaisesRegex(RuntimeError, 'intercepted exec'):
+                    db_runtime.activate_runtime()
+            argv = execute.call_args.args[1]
+            self.assertEqual(argv[:3], [str(python), '-I', '-c'])
+            self.assertEqual(argv[-2:], ['query', payload])
+            self.assertIn('sys.path.insert(0,plugin)', argv[3])
+            (target / 'pyvenv.cfg').write_text('include-system-site-packages = true\n')
+            with self.assertRaisesRegex(db_runtime.DependencyMissing, 'exclude system packages'):
+                db_runtime.prepared_runtime()
 
     def test_failed_setup_preserves_previous_runtime(self):
         with private_home() as home:

@@ -2514,6 +2514,13 @@ def main():
         send_error("Action argument missing")
 
     action = sys.argv[1]
+    if action != "runtime-prepare":
+        try:
+            activate_runtime()
+        except DependencyMissing as e:
+            send_error(str(e), "dependency_missing")
+        except Exception as e:
+            send_error(str(e))
     raw_payload = sys.argv[2] if len(sys.argv) > 2 else ""
     params = {}
     if raw_payload.startswith("@file:"):
@@ -2535,7 +2542,6 @@ def main():
     instance = params.get("instance", {})
 
     try:
-        activate_runtime()
         if action == "runtime-status":
             from db_runtime import status
             send_json(status())
