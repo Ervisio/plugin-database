@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.4.1] - 2026-11-06
+
+- Preserve explicitly saved host/port overrides when merging detected connection metadata. Detect PostgreSQL cluster ports through pg_lsclusters and hide its redundant aggregate service.
+
 ## [1.4.0] - 2026-11-06
 
 - Replace truncated SQLite IDs with stable full-path hashes; validate file headers, never create files while opening, preserve SQLite3 filenames and support quoted identifiers, generated columns and index metadata.
