@@ -3,6 +3,7 @@ import { patchExplorer, useExplorer, type ExplorerTab } from '../../explorerStat
 import { t } from '../../i18n';
 import { Button, EmptyState, Tabs, type TabItem } from '../../kit';
 import { PageHeader } from '../../ui/PageHeader';
+import { RuntimeDrivers } from '../../ui/RuntimeDrivers';
 import { DataGrid } from './DataGrid';
 import { StructureTab } from './StructureTab';
 import { QueryTab } from './QueryTab';
@@ -32,12 +33,12 @@ export function ExplorerView({ inst }: { inst: DbInstance }) {
 
   if (dbs.error && !dbs.data) {
     return (
-      <EmptyState
+      <div className="db-col" style={{ gap: 16 }}><RuntimeDrivers onReady={() => void dbs.refresh()} /><EmptyState
         icon="alert"
         title={t('Cannot reach {name}', { name: inst.name })}
         text={dbs.error}
         action={<Button variant="primary" icon="refresh" onClick={() => void dbs.refresh()}>{t('Retry')}</Button>}
-      />
+      /></div>
     );
   }
 

@@ -210,6 +210,8 @@ export async function callBridge<T>(action: string, payload: any = {}): Promise<
 }
 
 export const dbApi = {
+  runtimeStatus: () => callBridge<{ ready: boolean; drivers: Record<string, boolean>; python: string; isolated: boolean }>('runtime-status'),
+  prepareRuntime: () => callBridge<{ ok: boolean; ready: boolean }>('runtime-prepare'),
   detect: () => callBridge<DetectResult>('detect'),
   installDocker: (p: { engine: string; version: string; name: string; password: string; port: number }) =>
     callBridge<{ ok: boolean; container_id: string }>('install-docker', p),

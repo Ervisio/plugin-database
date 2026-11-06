@@ -1,7 +1,7 @@
 {
   "id": "database",
   "name": "Databases",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "author": "Ervisio Community",
   "description": "HeidiSQL-style database manager for MySQL, MariaDB, PostgreSQL, SQLite, MongoDB and Redis/Valkey: schema tree, editable data grid with live search and filters, query editor with autocomplete, users and slow query log.",
   "homepage": "https://github.com/Ervisio",
@@ -34,7 +34,7 @@
         "description": "Ervisio Database Engine Bridge",
         "admin": true,
         "adminUnlessGroup": "docker",
-        "timeoutSec": 120,
+        "timeoutSec": 300,
         "argv": [
           "python3",
           "/var/lib/ervisio/plugins/database/db-bridge.py",
@@ -61,7 +61,7 @@
         "description": "Ervisio Database Engine Bridge",
         "admin": true,
         "adminUnlessGroup": "docker-users",
-        "timeoutSec": 120,
+        "timeoutSec": 300,
         "argv": [
           "python.exe",
           "C:\\ProgramData\\Ervisio\\data\\plugins\\database\\db-bridge.py",
@@ -104,6 +104,9 @@
   "files": {
     "index.js": "",
     "logo.svg": "",
-    "db-bridge.py": ""
+    "db-bridge.py": "",
+    "db_runtime.py": "",
+    "db_runtime_windows.py": "",
+    "requirements.lock": ""
   }
 }
