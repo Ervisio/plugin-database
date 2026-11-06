@@ -4,6 +4,7 @@ import { dbApi, detectCache, invalidateInstance, type DbInstance } from '../api'
 import { t } from '../i18n';
 import { openExplorer } from '../router';
 import { PageHeader } from '../ui/PageHeader';
+import { RuntimeDrivers } from '../ui/RuntimeDrivers';
 import { engineIcon } from '../ui/icons';
 import { buildConnectionString, copyText } from '../utils';
 import { pushRecent, useFile } from '../settings';
@@ -119,6 +120,7 @@ export function InstancesView({ search }: { search: string }) {
         }
       />
 
+      <RuntimeDrivers />
       {!det.data && det.loading ? (
         <Skeleton lines={4} />
       ) : det.error && !det.data ? (

@@ -18,3 +18,9 @@ All notable changes to the Ervisio Database Plugin will be documented in this fi
 ## 1.0.0
 
 * Initial release of Ervisio Database Plugin.
+## 1.1.1
+
+- Fix missing PostgreSQL/MySQL driver errors with an explicit Prepare drivers action. Drivers live in a private, versioned Python virtual environment for the command's account; system Python is unchanged.
+- Pin binary wheels and SHA-256 hashes, verify imports before atomically activating the runtime, and preserve the previous runtime on failure. SQLite remains usable without extra drivers.
+- Show runtime status and actionable setup errors in Instances and the connection error screen.
+- Include runtime helpers and the dependency lock in the signed plugin inventory; validate package/manifest/tag version agreement.

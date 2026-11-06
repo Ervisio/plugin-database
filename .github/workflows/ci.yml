@@ -27,6 +27,13 @@ jobs:
         run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - name: Build
         run: npm run build
+      - name: Database runtime and real SQLite regression tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Verify pinned database driver wheels
+        run: |
+          python3 -m venv "$RUNNER_TEMP/database-driver-test"
+          "$RUNNER_TEMP/database-driver-test/bin/python" -I -m pip --isolated install --disable-pip-version-check --no-input --only-binary=:all: --require-hashes -r requirements.lock
+          "$RUNNER_TEMP/database-driver-test/bin/python" -I -c "import pymysql, psycopg2, cryptography"
       - name: Pack
         run: npm run pack
       - uses: actions/checkout@v4

@@ -15,6 +15,14 @@ The dialog lists the permissions below; updates appear in **Plugins › Updates*
 
 ## What it does
 
+### Database drivers
+
+The bridge needs Python 3.10+ with `venv`/`ensurepip`. Open **Databases → Prepare drivers** before connecting to PostgreSQL or MySQL. This explicit action installs only SHA-256 pinned binary wheels from PyPI into `~/.local/share/ervisio/database-runtime/python-X.Y`, under the account executing the plugin command. It never changes system Python or executes `sudo pip`. SQLite uses Python's standard library and needs no download.
+
+An ordinary member of `docker` uses their own runtime. A command executed through administrator unlock uses the administrator account's runtime; preparing another account's runtime does not prepare this one. Missing `venv`/pip or an unsupported Python/platform wheel produces an actionable error and preserves existing data and the previous runtime. No dependency downloads occur merely by opening a page or running a query. On Debian/Ubuntu install the distro's matching `python3-venv` package if the interpreter lacks `ensurepip`.
+
+Pinned upstream sources: [Psycopg](https://pypi.org/project/psycopg2-binary/), [PyMySQL](https://pypi.org/project/PyMySQL/), and [Python venv](https://docs.python.org/3/library/venv.html). The command capability still requires an available `python3` interpreter; this plugin does not install Python or database servers while preparing drivers.
+
 * **Instances & Engine Deployment (Zero Terminal Steps)**:
   * **🐳 Docker Containers**: 1-click deployment for MySQL (8.4-LTS, 8.0, 9.0, 5.7), MariaDB (11.4-LTS, 11.2, 10.11-LTS, 10.6), and PostgreSQL (17, 16, 15, 14) with custom ports, container names, and persistent volumes.
   * **🖥️ Native Systemd Services**: 1-click installation via APT package manager (`mariadb-server`, `mysql-server`, `postgresql`, `sqlite3`). Automatically starts and enables the systemd service.

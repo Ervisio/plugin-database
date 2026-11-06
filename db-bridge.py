@@ -5,6 +5,8 @@ Provides unified HeidiSQL-style management for MySQL, MariaDB, PostgreSQL, and S
 Communicates via JSON over stdout.
 """
 import sys
+sys.dont_write_bytecode = True
+from db_runtime import DependencyMissing, activate_runtime, require_driver
 import os
 import json
 import base64
@@ -55,6 +57,7 @@ def run_cmd(cmd: List[str], timeout: int = 300) -> str:
 
 # Database connection helpers
 def get_mysql_conn(instance: Dict[str, Any], database: Optional[str] = None):
+    require_driver("pymysql")
     import pymysql
     host = instance.get("host", "127.0.0.1")
     port = int(instance.get("port", 3306))
@@ -88,6 +91,7 @@ def get_mysql_conn(instance: Dict[str, Any], database: Optional[str] = None):
     return pymysql.connect(**kwargs)
 
 def get_postgres_conn(instance: Dict[str, Any], database: Optional[str] = None):
+    require_driver("psycopg2")
     import psycopg2
     from psycopg2.extras import RealDictCursor
     host = instance.get("host", "127.0.0.1")
@@ -1183,7 +1187,14 @@ def main():
     instance = params.get("instance", {})
 
     try:
-        if action == "detect":
+        activate_runtime()
+        if action == "runtime-status":
+            from db_runtime import status
+            send_json(status())
+        elif action == "runtime-prepare":
+            from db_runtime import install
+            send_json(install())
+        elif action == "detect":
             send_json(action_detect())
         elif action == "install-docker":
             send_json(action_install_docker(params))
@@ -1223,6 +1234,8 @@ def main():
             send_json(action_toggle_log(instance, params))
         else:
             send_error(f"Unknown action: {action}")
+    except DependencyMissing as e:
+        send_error(str(e), "dependency_missing")
     except Exception as e:
         send_error(str(e))
 

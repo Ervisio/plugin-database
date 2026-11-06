@@ -35,6 +35,8 @@ jobs:
         run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - name: Build
         run: npm run build
+      - name: Database runtime regression tests
+        run: python3 -m unittest discover -s tests -v
       - name: Pack (checks tag = manifest version = package.json version)
         run: npm run pack
       - uses: actions/checkout@v4
