@@ -160,7 +160,7 @@ const TMP_DIR = `${CONFIG_DIR}/tmp`;
 let fileTransport = true;
 let tmpReady: Promise<void> | null = null;
 
-/** Creates the payload folder once and removes payload files left over by requests that never reached the bridge. */
+/** Prepare private payload storage; each request cleans only its own file. */
 function ensureTmpDir(): Promise<void> {
   if (!tmpReady) {
     const files = getSdk().files;

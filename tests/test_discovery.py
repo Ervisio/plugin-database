@@ -66,9 +66,9 @@ class DiscoveryTests(unittest.TestCase):
     def test_header_validation_excludes_non_sqlite_and_includes_extensionless(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, 'not-a-database.db').write_text('ordinary text')
-            self.make_db(Path(folder, 'application-data'))
+            self.make_db(Path(folder, 'application.data'))
             found, _ = bridge.scan_sqlite([folder])
-            self.assertEqual([i['name'] for i in found], ['application-data'])
+            self.assertEqual([i['name'] for i in found], ['application.data'])
 
     def test_open_missing_never_creates_an_empty_database(self):
         with tempfile.TemporaryDirectory() as folder:

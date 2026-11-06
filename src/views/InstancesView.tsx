@@ -29,8 +29,8 @@ export function InstancesView({ search }: { search: string }) {
   const q = search.trim().toLowerCase();
   const filtered = all.filter(i=>folder==='all'||(folder==='unfiled'?!library.value.placement[i.id]:library.value.placement[i.id]===folder)).filter((i) => !q || [i.name, i.type, i.mode, i.host, String(i.port || ''), i.path || ''].join(' ').toLowerCase().includes(q));
   const running = all.filter((i) => i.status === 'running').length;
-  const recentList = recent.ids.map((id) => filtered.find((i) => i.id === id)).filter(Boolean) as DbInstance[];
-  const rest = filtered.filter((i) => !recent.ids.includes(i.id));
+  const recentList = (folder==='all'?recent.ids.map((id) => filtered.find((i) => i.id === id)).filter(Boolean):[]) as DbInstance[];
+  const rest = filtered.filter((i) => !recentList.some(recent=>recent.id===i.id));
 
   const open = (inst: DbInstance) => {
     if(inst.id.startsWith('custom-')&&inst.password===undefined){setConnection(inst);setOpenConnect(true);return;}
@@ -116,7 +116,7 @@ export function InstancesView({ search }: { search: string }) {
     <div className="db-col" style={{ gap: 16 }}>
       <PageHeader
         icon="db-database"
-        title={t('Database engines')}
+        title={t('Database library')}
         subtitle={t('MySQL, MariaDB, PostgreSQL, SQLite, MongoDB and Redis on this server')}
         actions={
           <>
@@ -142,7 +142,7 @@ export function InstancesView({ search }: { search: string }) {
             <StatCard hue="plg" icon="db-database" label={t('Engines')} value={all.length} />
             <StatCard hue="plg" icon="play" label={t('Running')} value={running} />
             <StatCard hue="plg" icon="db-docker" label="Docker" value={instances.filter((i) => i.mode === 'docker').length} />
-            <StatCard hue="plg" icon="db-sqlite" label={t('SQLite files')} value={sqliteFiles.length} />
+            <StatCard hue="plg" icon="db-sqlite" label={t('SQLite files')} value={all.filter(instance=>instance.engine==='sqlite').length} />
           </div>
 
           {filtered.length === 0 ? (

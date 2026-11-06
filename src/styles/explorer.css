@@ -90,3 +90,6 @@
 .db-library-move{max-width:140px;min-width:70px;background:var(--surface);color:var(--ink2);border:1px solid var(--line);border-radius:7px;padding:5px;font:inherit;font-size:11px}
 .db-discovery-report{padding:12px 16px;background:var(--warn-s);border-radius:12px;font-size:12px;color:var(--ink2)}.db-discovery-report summary{cursor:pointer;color:var(--ink);font-weight:600}.db-discovery-report p{overflow-wrap:anywhere}
 @media(max-width:800px){.db-library-layout{flex-direction:column}.db-library-folders{position:static;width:100%}.db-library-content{width:100%}}
+
+.db-library-content .db-eng-f{flex-wrap:wrap}
+@media(max-width:480px){.db-library-content .db-grid{grid-template-columns:minmax(0,1fr)}}

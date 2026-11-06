@@ -229,12 +229,15 @@ def scan_sqlite(roots, max_files=250, max_depth=8, max_entries=25000, seconds=3)
                 if time.monotonic() - started > seconds:
                     limited = True
                     break
-                if not name.lower().endswith((".db", ".sqlite", ".sqlite3", ".db3", ".s3db", ".sl3")) and "." in name:
+                if name.endswith(("-wal", "-shm", "-journal")):
                     continue
                 candidate = os.path.join(directory, name)
                 if os.path.islink(candidate) or not sqlite_header(candidate):
                     continue
-                item = sqlite_instance(candidate)
+                try:
+                    item = sqlite_instance(candidate)
+                except OSError:
+                    continue
                 if item["id"] not in seen:
                     found.append(item); seen.add(item["id"])
                 if len(found) >= max_files or time.monotonic() - started > seconds:
