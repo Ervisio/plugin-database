@@ -19,7 +19,7 @@ class DiscoveryTests(unittest.TestCase):
         fake=types.ModuleType('pymysql')
         fake.cursors=types.SimpleNamespace(DictCursor=dict)
         fake.connect=lambda **kwargs:kwargs
-        with patch.dict(sys.modules,{'pymysql':fake}),patch.object(bridge,'require_driver'),patch.object(bridge.os.path,'exists',return_value=True):
+        with patch.dict(sys.modules,{'pymysql':fake}),patch.object(bridge,'require_driver'),patch.object(bridge,'IS_WINDOWS',False),patch.object(bridge.os.path,'exists',return_value=True):
             result=bridge.get_mysql_conn({'mode':'docker','host':'127.0.0.1','port':13306})
             self.assertEqual(result['port'],13306)
             self.assertNotIn('unix_socket',result)
